@@ -16,22 +16,18 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is active and running!"
+    return "Bot is running perfectly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ---------------------------------------------------------
-# تنظیمات اولیه و کلیدها
+# تنظیمات اولیه و خواندن کلیدها
 # ---------------------------------------------------------
-raw_bot_token = os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I"
-raw_gemini_key = os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A"
+BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
 
-BOT_TOKEN = raw_bot_token.strip() if raw_bot_token else ""
-GEMINI_API_KEY = raw_gemini_key.strip() if raw_gemini_key else ""
-
-# Chat ID عددی کانال شما جهت ارسال مطمئن
 MY_CHANNEL_ID = "-1002038404831"
 MY_CHANNEL_USERNAME = "Rallyir"
 
@@ -121,7 +117,7 @@ target_channels = load_channels()
 last_update_id = 0
 
 # ---------------------------------------------------------
-# تصفیه متن و حذف ایموجی
+# پاک‌سازی متن و فیلتر ایموجی
 # ---------------------------------------------------------
 def remove_emojis(text):
     if not text:
@@ -171,21 +167,14 @@ def rewrite_with_ai(raw_text):
     if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
         return None
 
-    recent_context = "\n---\n".join(recent_news_summaries[-15:]) if recent_news_summaries else "هیچ خبری ثبت نشده است."
-
     prompt = (
-        "تو یک ویرایشگر خبر حرفه‌ای هستی. وظیفه داری متن زیر را بازنویسی کنی.\n\n"
-        "قوانین مهم:\n"
-        "۱. ابتدا بررسی کن آیا این خبر موضوع کاملاً مشابهی با یکی از «اخبار اخیر» زیر دارد یا خیر.\n"
-        "   اگر تکراری است، فقط کلمه 'DUPLICATE' را بنویس.\n"
-        "۲. اگر خبر کلاً تبلیغاتی است، فقط کلمه 'SKIP' را بنویس.\n"
-        "۳. اگر خبر جدید است، آن را بازنویسی کن:\n"
-        "   - تمام لینک‌ها (http/t.me)، کلمات هایپرشده و آیدی‌ها (@) را حتماً حذف کن.\n"
-        "   - خط اول را یک تیتر دقیق و بدون ایموجی قرار بده.\n"
-        "   - از هیچ ایموجی و نمادی در هیچ جای متن استفاده نکن.\n"
-        "۴. تعیین دقیق هشتگ‌ها: در انتهای متن، بین ۲ تا ۴ هشتگ تخصصی بگذار.\n\n"
-        f"اخبار اخیر منتشر شده:\n{recent_context}\n\n"
-        f"متن خبر جدید برای بررسی:\n{raw_text}"
+        "تو یک ویرایشگر خبر حرفه‌ای هستی. متن زیر را بازنویسی کن.\n\n"
+        "قوانین:\n"
+        "۱. تمام لینک‌ها، هایپرلینک‌ها و آیدی‌ها (@) را حذف کن.\n"
+        "۲. خط اول را یک تیتر دقیق و بدون هیچ ایموجی بگذار.\n"
+        "۳. از هیچ ایموجی در هیچ قسمتی استفاده نکن.\n"
+        "۴. در انتها ۲ تا ۴ هشتگ خبری قرار بده.\n\n"
+        f"متن خبر:\n{raw_text}"
     )
 
     for model_name in ['gemini-1.5-flash', 'gemini-pro']:
@@ -193,9 +182,6 @@ def rewrite_with_ai(raw_text):
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
             result = response.text.strip()
-            
-            if "DUPLICATE" in result or "SKIP" in result:
-                return None
 
             result = sanitize_all_links(result)
             lines = [line.strip() for line in result.splitlines() if line.strip()]
@@ -206,10 +192,6 @@ def rewrite_with_ai(raw_text):
             lines[0] = f"<b>{headline}</b>"
             formatted_body = "\n\n".join(lines)
 
-            recent_news_summaries.append(raw_text[:100])
-            if len(recent_news_summaries) > 30:
-                recent_news_summaries.pop(0)
-
             sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
             return formatted_body + f"\n\n{sig}"
         except Exception:
@@ -218,11 +200,11 @@ def rewrite_with_ai(raw_text):
     return clean_fallback(raw_text)
 
 # ---------------------------------------------------------
-# ارسال پست به تلگرام
+# تابع اصلی و بدون خطا برای ارسال پست به کانال
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
-        return False
+        return False, "BOT_TOKEN یافت نشد."
 
     keyboard = []
     links_row = []
@@ -239,20 +221,24 @@ def send_telegram_post(text, source_url=None):
         "disable_web_page_preview": True,
         "reply_markup": {"inline_keyboard": keyboard}
     }
+    
     try:
-        res = http_session.post(send_url, json=payload, timeout=5)
+        res = http_session.post(send_url, json=payload, timeout=6)
         if res.status_code == 200:
-            return True
+            return True, "ارسال موفق بود."
             
-        # ارسال بدون قالب HTML در صورت وجود خطای کاراکتر
+        # تلاش مجدد بدون فرمت HTML
         plain_text = text.replace("<b>", "").replace("</b>", "")
         payload["text"] = plain_text
         payload.pop("parse_mode", None)
-        res_retry = http_session.post(send_url, json=payload, timeout=5)
-        return res_retry.status_code == 200
+        res_retry = http_session.post(send_url, json=payload, timeout=6)
+        
+        if res_retry.status_code == 200:
+            return True, "ارسال موفق (متن ساده)."
+        else:
+            return False, f"خطای تلگرام: {res_retry.text}"
     except Exception as e:
-        print(f"Connection Error: {e}")
-        return False
+        return False, f"خطای شبکه: {e}"
 
 # ---------------------------------------------------------
 # کیبوردهای پنل
@@ -334,7 +320,7 @@ def get_cancel_keyboard():
     return {"inline_keyboard": [[{"text": "لغو عملیات", "callback_data": "cancel_action"}]]}
 
 # ---------------------------------------------------------
-# شنونده پنل
+# شنونده پنل مدیریت
 # ---------------------------------------------------------
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
@@ -594,10 +580,16 @@ def fast_panel_listener():
                             user_states[chat_id] = None
                             sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
                             clean_text = sanitize_all_links(text)
-                            post_text = f"<b>{clean_text[:40]}</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}"
                             
-                            success = send_telegram_post(post_text)
-                            reply = "پست با موفقیت در کانال منتشر شد." if success else "خطا در ارسال پست. چک کنید ربات در کانال ادمین باشد."
+                            # فرمت باثبات پیام دستی
+                            post_text = f"<b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}"
+                            
+                            ok, details = send_telegram_post(post_text)
+                            if ok:
+                                reply = "پست با موفقیت به کانال ارسال شد."
+                            else:
+                                reply = f"علت خطای عدم ارسال:\n{details}"
+                                
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -638,8 +630,8 @@ def process_single_channel(channel):
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
-                        success = send_telegram_post(final_text, source_post_url)
-                        if success:
+                        ok, _ = send_telegram_post(final_text, source_post_url)
+                        if ok:
                             seen_post_ids.add(post_id)
                             save_seen_post(post_id)
                     else:
@@ -660,7 +652,7 @@ def fetch_news_loop():
                 time.sleep(3)
 
 # ---------------------------------------------------------
-# اجرای پروژه
+# اجرا
 # ---------------------------------------------------------
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
