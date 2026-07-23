@@ -23,14 +23,19 @@ def run_flask():
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ---------------------------------------------------------
-# تنظیمات اولیه و کلیدها
+# تنظیمات اولیه و خواندن کلیدها از Environment
 # ---------------------------------------------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MY_CHANNEL = "@Rallyir"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A")
+
+if not BOT_TOKEN:
+    print("❌ خطا: متغیر BOT_TOKEN در Environment تنظیم نشده است!")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("⚠️ هشدار: متغیر GEMINI_API_KEY در Environment یافت نشد.")
 
 http_session = requests.Session()
 http_session.headers.update({
@@ -41,7 +46,7 @@ DB_FILE = "seen_posts.txt"
 CHANNELS_FILE = "channels.txt"
 CONFIG_FILE = "config.json"
 
-# ۱۰ کانال اولیه
+# ۱۰ کانال اولیه پیش‌فرض
 DEFAULT_CHANNELS = [
     "Tasnimnews", "FarsNewsInt", "IRNA_1313", "ISNAFA", 
     "KhabarOnline_ir", "Mehrnews", "YjcNewsChannel", 
@@ -205,6 +210,9 @@ def rewrite_with_ai(raw_text):
 # ارسال پست به تلگرام
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
+    if not BOT_TOKEN:
+        return False
+        
     keyboard = []
     links_row = []
     if source_url:
@@ -311,6 +319,10 @@ def get_cancel_keyboard():
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
     while True:
+        if not BOT_TOKEN:
+            time.sleep(5)
+            continue
+
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=1"
             res = http_session.get(url, timeout=3).json()
