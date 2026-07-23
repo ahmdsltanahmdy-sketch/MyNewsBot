@@ -27,12 +27,11 @@ def run_web_server():
     server.serve_forever()
 
 # ---------------------------------------------------------
-# ۲. تنظیمات اصلی
+# ۲. تنظیمات اصلی با آیدی عددی کانال
 # ---------------------------------------------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-
-# نکته: اگر آیدی عددی کانال را گرفتید، آن را جایگزین @Rallyir کنید (مثلاً "-100123456789")
-MY_CHANNEL = os.environ.get("MY_CHANNEL", "@Rallyir").strip()
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
+MY_CHANNEL = -1002038404831  # آیدی عددی کانال شما
+CHANNEL_PUBLIC_ID = "@Rallyir"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 http_session = requests.Session()
@@ -52,12 +51,13 @@ DEFAULT_CHANNELS = [
 
 recent_news_summaries = []
 user_states = {}
+selected_channels_for_bulk_delete = {}
 db_lock = threading.Lock()
 
 def load_config():
     default_config = {
         "bot_active": True,
-        "channel_signature": f"🆔 @Rallyir",
+        "channel_signature": f"🆔 {CHANNEL_PUBLIC_ID}",
         "blacklist": ["تبلیغات", "تخفیف ویژه"],
         "replacements": {"میزان در شبکه‌های اجتماعی": ""},
         "check_interval": 10
@@ -96,6 +96,11 @@ def load_channels():
                 return channels[:20]
     return DEFAULT_CHANNELS.copy()
 
+def save_channels(channels):
+    with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
+        for ch in channels[:20]:
+            f.write(f"{ch}\n")
+
 seen_post_ids = load_seen_posts()
 target_channels = load_channels()
 
@@ -131,6 +136,12 @@ def sanitize_all_links(text):
     text = emoji_pattern.sub(r'', text)
     return "\n".join([line.strip() for line in text.splitlines() if line.strip()]).strip()
 
+def check_blacklist(text):
+    for word in config_db.get("blacklist", []):
+        if word and word.lower() in text.lower():
+            return True
+    return False
+
 def clean_fallback(text):
     clean_t = sanitize_all_links(text)
     lines = clean_t.splitlines()
@@ -138,11 +149,70 @@ def clean_fallback(text):
         return ""
     
     lines[0] = f"📌 <b>{lines[0]}</b>"
-    sig = config_db.get("channel_signature", f"🆔 @Rallyir")
+    sig = config_db.get("channel_signature", f"🆔 {CHANNEL_PUBLIC_ID}")
     return "\n\n".join(lines) + f"\n\n#خبر\n\n{sig}"
 
 # ---------------------------------------------------------
-# ۴. تابع ارسال پست به کانال
+# ۴. فراخوانی API هوش مصنوعی Gemini
+# ---------------------------------------------------------
+def call_gemini_api(prompt_text):
+    if not GEMINI_API_KEY:
+        return None
+
+    models = ["gemini-1.5-flash", "gemini-1.5-pro"]
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+        try:
+            res = http_session.post(url, json=payload, timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+                text_response = data['candidates'][0]['content']['parts'][0]['text']
+                if text_response:
+                    return text_response.strip()
+        except Exception:
+            continue
+    return None
+
+def rewrite_with_ai(raw_text):
+    global recent_news_summaries
+
+    clean_raw = sanitize_all_links(raw_text)
+    if not clean_raw or len(clean_raw) < 15 or check_blacklist(clean_raw):
+        return None
+
+    recent_context = "\n---\n".join(recent_news_summaries[-15:]) if recent_news_summaries else "هیچ خبری ثبت نشده است."
+
+    prompt = (
+        "تو یک ویرایشگر خبر هستی. متن زیر را بازنویسی کن.\n"
+        "اگر تکراری است 'DUPLICATE' و اگر تبلیغاتی است 'SKIP' بنویس.\n"
+        "اگر جدید است، تمام لینک‌ها و ایموجی‌ها را حذف کن، خط اول تیتر بگذار و انتها ۲ هشتگ بنویس.\n\n"
+        f"اخبار اخیر:\n{recent_context}\n\nمتن جدید:\n{clean_raw}"
+    )
+
+    ai_result = call_gemini_api(prompt)
+    if ai_result:
+        if "DUPLICATE" in ai_result or "SKIP" in ai_result:
+            return None
+
+        result = sanitize_all_links(ai_result)
+        lines = [line.strip() for line in result.splitlines() if line.strip()]
+        if lines:
+            headline = lines[0].replace("<b>", "").replace("</b>", "")
+            lines[0] = f"📌 <b>{headline}</b>"
+            formatted_body = "\n\n".join(lines)
+
+            recent_news_summaries.append(clean_raw[:100])
+            if len(recent_news_summaries) > 30:
+                recent_news_summaries.pop(0)
+
+            sig = config_db.get("channel_signature", f"🆔 {CHANNEL_PUBLIC_ID}")
+            return formatted_body + f"\n\n{sig}"
+
+    return clean_fallback(clean_raw)
+
+# ---------------------------------------------------------
+# ۵. تابع ارسال مطمئن با آیدی عددی کانال
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     keyboard = []
@@ -184,11 +254,11 @@ def send_telegram_post(text, source_url=None):
         return False, f"خطای شبکه: {str(e)}"
 
 # ---------------------------------------------------------
-# ۵. کیبورد اصلی
+# ۶. کیبورد اصلی پنل
 # ---------------------------------------------------------
 def get_main_panel_keyboard():
     status_icon = "🟢" if config_db.get("bot_active", True) else "🔴"
-    status_text = "خاموش کردن" if config_db.get("bot_active", True) else "رو روشن کردن"
+    status_text = "خاموش کردن" if config_db.get("bot_active", True) else "روشن کردن"
     return {
         "inline_keyboard": [
             [
@@ -205,7 +275,7 @@ def get_cancel_keyboard():
     return {"inline_keyboard": [[{"text": "🚫 لغو", "callback_data": "cancel_action"}]]}
 
 # ---------------------------------------------------------
-# ۶. شنونده دستورات
+# ۷. شنونده دستورات پنل
 # ---------------------------------------------------------
 def fast_panel_listener():
     last_update_id = 0
@@ -280,7 +350,7 @@ def fast_panel_listener():
 
                     if state == "WAITING_FOR_FORCE_POST":
                         user_states[chat_id] = None
-                        sig = config_db.get("channel_signature", f"🆔 @Rallyir")
+                        sig = config_db.get("channel_signature", f"🆔 {CHANNEL_PUBLIC_ID}")
                         clean_t = sanitize_all_links(text)
                         post_text = f"📌 <b>{clean_t[:40]}</b>\n\n{clean_t}\n\n#خبر_فوری\n\n{sig}"
                         
@@ -308,7 +378,7 @@ def fast_panel_listener():
             time.sleep(2)
 
 # ---------------------------------------------------------
-# ۷. اسکراپ اخبار
+# ۸. اسکراپ اخبار
 # ---------------------------------------------------------
 def process_single_channel(channel):
     if not config_db.get("bot_active", True) or channel not in target_channels:
@@ -328,7 +398,7 @@ def process_single_channel(channel):
                 text_div = last_post.find("div", class_="tgme_widget_message_text")
                 if text_div:
                     raw_text = text_div.get_text(separator="\n")
-                    final_text = clean_fallback(raw_text)
+                    final_text = rewrite_with_ai(raw_text)
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
@@ -354,7 +424,7 @@ def fetch_news_loop():
                 time.sleep(3)
 
 # ---------------------------------------------------------
-# ۸. اجرای برنامه
+# ۹. اجرای برنامه
 # ---------------------------------------------------------
 web_thread = threading.Thread(target=run_web_server, daemon=True)
 web_thread.start()
