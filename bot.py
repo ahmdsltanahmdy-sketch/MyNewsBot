@@ -30,7 +30,7 @@ def health():
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
 
-# ادمین اصلی سیستم (آی‌دی ثبت‌شده شما)
+# آی‌دی عددی ادمین اصلی
 INITIAL_ADMIN_ID = 97241647
 
 if GEMINI_API_KEY:
@@ -57,6 +57,7 @@ DEFAULT_CHANNELS = [
 user_states = {}
 selected_channels_for_bulk_delete = {}
 recent_posts_history = []
+last_processed_news_log = []  # ذخیره ۵ خبر آخر برای گزارش لحظه‌ای
 db_lock = threading.Lock()
 
 def load_config():
@@ -97,7 +98,6 @@ def save_config(cfg):
 config_db = load_config()
 
 def is_admin(user_id):
-    """بررسی دسترسی ادمین"""
     admins = config_db.get("admin_ids", [])
     return (user_id in admins) or (user_id == INITIAL_ADMIN_ID)
 
@@ -164,7 +164,6 @@ def remove_emojis(text):
     return emoji_pattern.sub("", text)
 
 def clean_extra_spaces(text):
-    """پاکسازی کامل فضاهای خالی و خطوط متوالی اضافه"""
     if not text:
         return ""
     text = re.sub(r'[ \t]+', ' ', text)
@@ -172,7 +171,6 @@ def clean_extra_spaces(text):
     return text.strip()
 
 def sanitize_all_links(text):
-    """حذف کامل تمام آدرس‌های اینترنتی، لینک‌ها و آیدی‌ها"""
     if not text:
         return ""
     text = re.sub(r'<a\s+[^>]*href=["\'][^"\']*["\'][^>]*>(.*?)</a>', r'\1', text, flags=re.IGNORECASE)
@@ -211,13 +209,10 @@ def is_fuzzy_duplicate(new_text):
 def is_in_quiet_hours():
     if not config_db.get("quiet_hours_active", False):
         return False
-    
     ir_time = datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
     curr_hour = ir_time.hour
-    
     start = config_db.get("quiet_start_hour", 0)
     end = config_db.get("quiet_end_hour", 6)
-    
     if start <= end:
         return start <= curr_hour < end
     else:
@@ -270,11 +265,12 @@ def rewrite_with_ai(raw_text):
 
             sig = config_db.get("channel_signature", f"🆔 @{config_db.get('target_channel_username', 'Rallyir')}")
             
+            clean_res = clean_extra_spaces(f"{formatted_body}\n\n{sig}")
             recent_posts_history.append(sanitize_all_links(raw_text))
             if len(recent_posts_history) > 30:
                 recent_posts_history.pop(0)
 
-            return clean_extra_spaces(f"{formatted_body}\n\n{sig}")
+            return clean_res
         except Exception:
             continue
 
@@ -358,12 +354,19 @@ def get_main_panel_keyboard():
                 {"text": "🎯 تغییر کانال مقصد", "callback_data": "panel_target_channel_prompt"}
             ],
             [
-                {"text": "👑 مدیریت ادمین‌ها", "callback_data": "panel_admins_menu"},
-                {"text": "💾 دیتابیس و ریست", "callback_data": "panel_backup_reset_menu"}
+                {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"},
+                {"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"}
             ],
             [
-                {"text": "⚡️ ارسال پست دستی", "callback_data": "panel_force_post_prompt"},
+                {"text": "⚡️ پاکسازی کش و افزایش سرعت", "callback_data": "clear_ram_cache"},
+                {"text": "👑 مدیریت ادمین‌ها", "callback_data": "panel_admins_menu"}
+            ],
+            [
+                {"text": "💾 دیتابیس و ریست", "callback_data": "panel_backup_reset_menu"},
                 {"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}
+            ],
+            [
+                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
             ]
         ]
     }
@@ -503,7 +506,7 @@ def get_interval_keyboard():
 # شنونده پنل مدیریت
 # ---------------------------------------------------------
 def fast_panel_listener():
-    global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
+    global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete, recent_posts_history
     print("Bot fast listener is online...")
     
     try:
@@ -550,7 +553,42 @@ def fast_panel_listener():
                         except Exception:
                             pass
 
-                        if action in ["panel_main", "cancel_action"]:
+                        # --- تست سلامت AI ---
+                        if action == "test_ai_health":
+                            test_status = "❌ خطا در اتصال به Gemini"
+                            try:
+                                ai_model = genai.GenerativeModel('gemini-1.5-flash')
+                                resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
+                                if resp and resp.text:
+                                    test_status = f"✅ هوش مصنوعی کاملاً سالم و پاسخگو است.\nپاسخ تستی: {resp.text.strip()[:60]}..."
+                            except Exception as e:
+                                test_status = f"❌ خطای هوش مصنوعی: {str(e)[:80]}"
+                            
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": f"🤖 **گزارش تست سلامت هوش مصنوعی:**\n\n{test_status}", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        # --- گزارش ۵ خبر آخر ---
+                        elif action == "show_recent_news_log":
+                            if last_processed_news_log:
+                                log_text = "\n\n".join([f"📌 {item}" for item in last_processed_news_log[-5:]])
+                            else:
+                                log_text = "هنوز خبری در این چرخه ثبت نشده است."
+                            
+                            reply = f"🔍 **آخرین اخبار پردازش‌شده توسط ربات:**\n\n{log_text}"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        # --- پاکسازی کش حافظه برای افزایش سرعت ---
+                        elif action == "clear_ram_cache":
+                            recent_posts_history.clear()
+                            reply = "⚡️ **حافظه کش موقت (RAM Cache) با موفقیت پاک‌سازی شد و سرعت ربات بهینه گردید.**"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif action in ["panel_main", "cancel_action"]:
                             user_states[chat_id] = None
                             selected_channels_for_bulk_delete[chat_id] = set()
                             st_text = "🟢 **فعال**" if config_db.get("bot_active", True) else "🔴 **غیرفعال (متوقف)**"
@@ -1035,6 +1073,7 @@ def fast_panel_listener():
 # بررسی موازی کانال‌ها
 # ---------------------------------------------------------
 def process_single_channel(channel):
+    global last_processed_news_log
     if not config_db.get("bot_active", True) or channel not in target_channels:
         return
 
@@ -1064,6 +1103,11 @@ def process_single_channel(channel):
                         if success:
                             seen_post_ids.add(post_id)
                             save_seen_post(post_id)
+                            # ثبت در لاگ ۵ خبر آخر
+                            first_line = final_text.splitlines()[0].replace("<b>", "").replace("</b>", "").replace("📌 ", "")
+                            last_processed_news_log.append(f"[{channel}] {first_line} (<a href='{source_post_url}'>منبع</a>)")
+                            if len(last_processed_news_log) > 5:
+                                last_processed_news_log.pop(0)
                     else:
                         seen_post_ids.add(post_id)
                         save_seen_post(post_id)
