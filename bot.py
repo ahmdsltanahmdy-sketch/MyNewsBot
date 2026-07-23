@@ -57,7 +57,7 @@ DEFAULT_CHANNELS = [
 user_states = {}
 selected_channels_for_bulk_delete = {}
 recent_posts_history = []
-last_processed_news_log = []  # ذخیره ۵ خبر آخر برای گزارش لحظه‌ای
+last_processed_news_log = []
 db_lock = threading.Lock()
 
 def load_config():
@@ -248,7 +248,8 @@ def rewrite_with_ai(raw_text):
         f"متن خبر:\n{raw_text}"
     )
 
-    for model_name in ['gemini-1.5-flash', 'gemini-pro']:
+    # تست مدل‌های مختلف استاندارد گوگل
+    for model_name in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-pro']:
         try:
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
@@ -562,7 +563,13 @@ def fast_panel_listener():
                                 if resp and resp.text:
                                     test_status = f"✅ هوش مصنوعی کاملاً سالم و پاسخگو است.\nپاسخ تستی: {resp.text.strip()[:60]}..."
                             except Exception as e:
-                                test_status = f"❌ خطای هوش مصنوعی: {str(e)[:80]}"
+                                try:
+                                    ai_model = genai.GenerativeModel('gemini-pro')
+                                    resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
+                                    if resp and resp.text:
+                                        test_status = f"✅ هوش مصنوعی کاملاً سالم و پاسخگو است.\nپاسخ تستی: {resp.text.strip()[:60]}..."
+                                except Exception as e2:
+                                    test_status = f"❌ خطای هوش مصنوعی: {str(e2)[:80]}"
                             
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"🤖 **گزارش تست سلامت هوش مصنوعی:**\n\n{test_status}", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
@@ -1103,7 +1110,6 @@ def process_single_channel(channel):
                         if success:
                             seen_post_ids.add(post_id)
                             save_seen_post(post_id)
-                            # ثبت در لاگ ۵ خبر آخر
                             first_line = final_text.splitlines()[0].replace("<b>", "").replace("</b>", "").replace("📌 ", "")
                             last_processed_news_log.append(f"[{channel}] {first_line} (<a href='{source_post_url}'>منبع</a>)")
                             if len(last_processed_news_log) > 5:
