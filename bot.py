@@ -10,20 +10,20 @@ import google.generativeai as genai
 from flask import Flask
 
 # ---------------------------------------------------------
-# وب‌سرور زنده نگه‌داشتن ربات در Render
+# وب‌سرور زنده نگه‌داشتن ربات در Render (بدون ارور دیپلوی)
 # ---------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "News Bot is running perfectly at peak performance!"
+    return "OK", 200
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
+@app.route('/health')
+def health():
+    return "Healthy", 200
 
 # ---------------------------------------------------------
-# تنظیمات اولیه و کلیدها
+# تنظیمات اولیه و خواندن کلیدها
 # ---------------------------------------------------------
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
@@ -46,7 +46,6 @@ DB_FILE = "seen_posts.txt"
 CHANNELS_FILE = "channels.txt"
 CONFIG_FILE = "config.json"
 
-# ۱۰ کانال اولیه
 DEFAULT_CHANNELS = [
     "Tasnimnews", "FarsNewsInt", "IRNA_1313", "ISNAFA", 
     "KhabarOnline_ir", "Mehrnews", "YjcNewsChannel", 
@@ -198,7 +197,7 @@ def rewrite_with_ai(raw_text):
     return clean_fallback(raw_text)
 
 # ---------------------------------------------------------
-# ارسال ایمن و سریع پیام به تلگرام
+# ارسال پیام به تلگرام
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
@@ -225,7 +224,6 @@ def send_telegram_post(text, source_url=None):
         if res.status_code == 200:
             return True
             
-        # تلاش مجدد بدون HTML جهت جلوگیری از خطای کاراکترها
         plain_text = text.replace("<b>", "").replace("</b>", "")
         payload["text"] = plain_text
         payload.pop("parse_mode", None)
@@ -265,6 +263,13 @@ def get_main_panel_keyboard():
         ]
     }
 
+def get_cancel_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "❌ انصراف و بازگشت به پنل", "callback_data": "cancel_action"}]
+        ]
+    }
+
 def get_bulk_delete_keyboard(chat_id):
     keyboard = []
     selected = selected_channels_for_bulk_delete.get(chat_id, set())
@@ -274,14 +279,14 @@ def get_bulk_delete_keyboard(chat_id):
     count = len(selected)
     confirm_text = f"تأیید و حذف موارد انتخاب‌شده ({count})" if count > 0 else "هیچ کانالی انتخاب نشده"
     keyboard.append([{"text": confirm_text, "callback_data": "confirm_bulk_delete"}])
-    keyboard.append([{"text": "انصراف و بازگشت", "callback_data": "cancel_action"}])
+    keyboard.append([{"text": "❌ انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
 
 def get_delete_channels_keyboard():
     keyboard = []
     for ch in list(target_channels):
         keyboard.append([{"text": f"حذف {ch}", "callback_data": f"del_ch_{ch}"}])
-    keyboard.append([{"text": "انصراف و بازگشت", "callback_data": "cancel_action"}])
+    keyboard.append([{"text": "❌ انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
 
 def get_blacklist_keyboard():
@@ -290,7 +295,7 @@ def get_blacklist_keyboard():
     bl = config_db.get("blacklist", [])
     for idx, word in enumerate(bl):
         keyboard.append([{"text": f"حذف «{word}»", "callback_data": f"del_bl_idx_{idx}"}])
-    keyboard.append([{"text": "انصراف و بازگشت", "callback_data": "cancel_action"}])
+    keyboard.append([{"text": "❌ انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
 
 def get_interval_keyboard():
@@ -305,13 +310,10 @@ def get_interval_keyboard():
                 {"text": "۳۰ ثانیه", "callback_data": "set_interval_30"}
             ],
             [
-                {"text": "انصراف و بازگشت", "callback_data": "cancel_action"}
+                {"text": "❌ انصراف و بازگشت", "callback_data": "cancel_action"}
             ]
         ]
     }
-
-def get_cancel_keyboard():
-    return {"inline_keyboard": [[{"text": "لغو عملیات", "callback_data": "cancel_action"}]]}
 
 # ---------------------------------------------------------
 # شنونده پنل مدیریت
@@ -355,7 +357,7 @@ def fast_panel_listener():
                             user_states[chat_id] = None
                             selected_channels_for_bulk_delete[chat_id] = set()
                             st_text = "فعال" if config_db.get("bot_active", True) else "غیرفعال"
-                            reply = "عملیات لغو شد." if action == "cancel_action" else f"پنل مدیریت ربات خبری\n\nوضعیت جمع‌آوری اخبار: {st_text}"
+                            reply = "❌ **عملیات لغو شد و به پنل اصلی بازگشتید.**" if action == "cancel_action" else f"پنل مدیریت ربات خبری\n\nوضعیت جمع‌آوری اخبار: {st_text}"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -522,10 +524,10 @@ def fast_panel_listener():
                         if not text:
                             continue
 
-                        if text in ["لغو", "/cancel", "انصراف"]:
+                        if text in ["لغو", "/cancel", "انصراف", "کنسل"]:
                             user_states[chat_id] = None
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                                "chat_id": chat_id, "text": "عملیات لغو شد.", "reply_markup": get_main_panel_keyboard()
+                                "chat_id": chat_id, "text": "❌ **عملیات لغو شد و به پنل اصلی بازگشتید.**", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
                             continue
 
@@ -640,13 +642,19 @@ def fetch_news_loop():
                 time.sleep(3)
 
 # ---------------------------------------------------------
-# اجرای پروژه
+# ساختار اجرای استاندارد و ایمن سرور (مخصوص Render)
 # ---------------------------------------------------------
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    
+    # شروع بخش ربات تلگرام در Thread جداگانه
+    bot_thread = threading.Thread(target=fast_panel_listener, daemon=True)
+    bot_thread.start()
 
-news_thread = threading.Thread(target=fetch_news_loop, daemon=True)
-news_thread.start()
+    # شروع بخش بررسی اخبار در Thread جداگانه
+    news_thread = threading.Thread(target=fetch_news_loop, daemon=True)
+    news_thread.start()
 
-print("Bot starting...")
-fast_panel_listener()
+    # اجرای مستقیم وب‌سرور در نخ اصلی جهت تأیید دیپلوی توسط Render
+    print("🚀 Server starting on port:", port)
+    app.run(host='0.0.0.0', port=port)
