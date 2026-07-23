@@ -9,23 +9,34 @@ from bs4 import BeautifulSoup
 import google.generativeai as genai
 from flask import Flask
 
+# ---------------------------------------------------------
+# وب‌سرور زنده نگه‌داشتن ربات در Render
+# ---------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is active and running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
-# مقداردهی مستقیم برای تست نهایی
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A")
+# ---------------------------------------------------------
+# تنظیمات اولیه و خواندن ایمن کلیدها (جلوگیری از کرش)
+# ---------------------------------------------------------
+raw_bot_token = os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I"
+raw_gemini_key = os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A"
+
+BOT_TOKEN = raw_bot_token.strip() if raw_bot_token else ""
+GEMINI_API_KEY = raw_gemini_key.strip() if raw_gemini_key else ""
 MY_CHANNEL = "@Rallyir"
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"⚠️ Gemini Init Warning: {e}")
 
 http_session = requests.Session()
 http_session.headers.update({
@@ -64,8 +75,11 @@ def load_config():
     return default_config
 
 def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Config Save Error: {e}")
 
 config_db = load_config()
 
@@ -77,8 +91,11 @@ def load_seen_posts():
 
 def save_seen_post(post_id):
     with db_lock:
-        with open(DB_FILE, "a") as f:
-            f.write(f"{post_id}\n")
+        try:
+            with open(DB_FILE, "a") as f:
+                f.write(f"{post_id}\n")
+        except Exception:
+            pass
 
 def load_channels():
     if os.path.exists(CHANNELS_FILE):
@@ -89,14 +106,20 @@ def load_channels():
     return DEFAULT_CHANNELS.copy()
 
 def save_channels(channels):
-    with open(CHANNELS_FILE, "w") as f:
-        for ch in channels[:20]:
-            f.write(f"{ch}\n")
+    try:
+        with open(CHANNELS_FILE, "w") as f:
+            for ch in channels[:20]:
+                f.write(f"{ch}\n")
+    except Exception:
+        pass
 
 seen_post_ids = load_seen_posts()
 target_channels = load_channels()
 last_update_id = 0
 
+# ---------------------------------------------------------
+# تصفیه متن و حذف ایموجی
+# ---------------------------------------------------------
 def remove_emojis(text):
     if not text:
         return ""
@@ -191,7 +214,14 @@ def rewrite_with_ai(raw_text):
 
     return clean_fallback(raw_text)
 
+# ---------------------------------------------------------
+# ارسال پست به تلگرام
+# ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN is empty!")
+        return False
+
     keyboard = []
     links_row = []
     if source_url:
@@ -208,11 +238,18 @@ def send_telegram_post(text, source_url=None):
         "reply_markup": {"inline_keyboard": keyboard}
     }
     try:
-        res = http_session.post(send_url, json=payload, timeout=4)
-        return res.status_code == 200
-    except Exception:
+        res = http_session.post(send_url, json=payload, timeout=5)
+        if res.status_code != 200:
+            print(f"❌ Telegram Error [{res.status_code}]: {res.text}")
+            return False
+        return True
+    except Exception as e:
+        print(f"❌ Connection Error in send_telegram_post: {e}")
         return False
 
+# ---------------------------------------------------------
+# کیبوردهای پنل
+# ---------------------------------------------------------
 def get_main_panel_keyboard():
     status_text = "خاموش کردن ربات" if config_db.get("bot_active", True) else "روشن کردن ربات"
     interval = config_db.get("check_interval", 10)
@@ -289,14 +326,30 @@ def get_interval_keyboard():
 def get_cancel_keyboard():
     return {"inline_keyboard": [[{"text": "لغو عملیات", "callback_data": "cancel_action"}]]}
 
+# ---------------------------------------------------------
+# شنونده پنل
+# ---------------------------------------------------------
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
+    print("📡 Fast panel listener started...")
+    
     while True:
         try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=1"
-            res = http_session.get(url, timeout=3).json()
-            if res.get("ok"):
-                for update in res.get("result", []):
+            if not BOT_TOKEN:
+                time.sleep(3)
+                continue
+
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+            params = {"offset": last_update_id + 1, "timeout": 5}
+            
+            res = http_session.get(url, params=params, timeout=8)
+            if res.status_code != 200:
+                time.sleep(2)
+                continue
+                
+            data = res.json()
+            if data.get("ok"):
+                for update in data.get("result", []):
                     last_update_id = update["update_id"]
                     
                     if "callback_query" in update:
@@ -306,7 +359,10 @@ def fast_panel_listener():
                         msg = cb.get("message", {})
                         chat_id = msg.get("chat", {}).get("id")
 
-                        http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=2)
+                        try:
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=2)
+                        except Exception:
+                            pass
 
                         if action in ["panel_main", "cancel_action"]:
                             user_states[chat_id] = None
@@ -545,16 +601,19 @@ def fast_panel_listener():
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
-        except Exception:
+        except Exception as e:
             time.sleep(1)
 
+# ---------------------------------------------------------
+# بررسی موازی کانال‌ها
+# ---------------------------------------------------------
 def process_single_channel(channel):
     if not config_db.get("bot_active", True) or channel not in target_channels:
         return
 
     url = f"https://t.me/s/{channel}"
     try:
-        res = http_session.get(url, timeout=3)
+        res = http_session.get(url, timeout=4)
         soup = BeautifulSoup(res.text, "html.parser")
         posts = soup.find_all("div", class_="tgme_widget_message")
         
@@ -592,11 +651,14 @@ def fetch_news_loop():
             else:
                 time.sleep(3)
 
+# ---------------------------------------------------------
+# اجرای پروژه
+# ---------------------------------------------------------
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
 news_thread = threading.Thread(target=fetch_news_loop, daemon=True)
 news_thread.start()
 
-print("ربات خبری آماده به کار است.")
+print("🚀 Bot starting...")
 fast_panel_listener()
