@@ -248,8 +248,8 @@ def rewrite_with_ai(raw_text):
         f"متن خبر:\n{raw_text}"
     )
 
-    # تست مدل‌های مختلف استاندارد گوگل
-    for model_name in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-pro']:
+    # به‌روزرسانی شده با مدل‌های پایدار و جدیدتر گوگل
+    for model_name in ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash']:
         try:
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
@@ -558,13 +558,13 @@ def fast_panel_listener():
                         if action == "test_ai_health":
                             test_status = "❌ خطا در اتصال به Gemini"
                             try:
-                                ai_model = genai.GenerativeModel('gemini-1.5-flash')
+                                ai_model = genai.GenerativeModel('gemini-2.5-flash')
                                 resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
                                 if resp and resp.text:
                                     test_status = f"✅ هوش مصنوعی کاملاً سالم و پاسخگو است.\nپاسخ تستی: {resp.text.strip()[:60]}..."
                             except Exception as e:
                                 try:
-                                    ai_model = genai.GenerativeModel('gemini-pro')
+                                    ai_model = genai.GenerativeModel('gemini-2.5-pro')
                                     resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
                                     if resp and resp.text:
                                         test_status = f"✅ هوش مصنوعی کاملاً سالم و پاسخگو است.\nپاسخ تستی: {resp.text.strip()[:60]}..."
