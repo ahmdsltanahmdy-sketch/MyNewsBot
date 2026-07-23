@@ -30,7 +30,10 @@ raw_gemini_key = os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzh
 
 BOT_TOKEN = raw_bot_token.strip() if raw_bot_token else ""
 GEMINI_API_KEY = raw_gemini_key.strip() if raw_gemini_key else ""
-MY_CHANNEL = "@Rallyir"
+
+# استفاده از Chat ID عددی مستقیم کانال شما برای جلوگیری از خطای تلگرام
+MY_CHANNEL_ID = "-1002038404831"
+MY_CHANNEL_USERNAME = "Rallyir"
 
 if GEMINI_API_KEY:
     try:
@@ -61,7 +64,7 @@ db_lock = threading.Lock()
 def load_config():
     default_config = {
         "bot_active": True,
-        "channel_signature": f"شناسه: {MY_CHANNEL}",
+        "channel_signature": f"شناسه: @{MY_CHANNEL_USERNAME}",
         "blacklist": ["تبلیغات", "تخفیف ویژه"],
         "check_interval": 10
     }
@@ -159,7 +162,7 @@ def clean_fallback(text):
     if not lines:
         return ""
     lines[0] = f"<b>{lines[0]}</b>"
-    sig = config_db.get("channel_signature", f"شناسه: {MY_CHANNEL}")
+    sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
     return "\n\n".join(lines) + f"\n\n#خبر\n\n{sig}"
 
 def rewrite_with_ai(raw_text):
@@ -207,7 +210,7 @@ def rewrite_with_ai(raw_text):
             if len(recent_news_summaries) > 30:
                 recent_news_summaries.pop(0)
 
-            sig = config_db.get("channel_signature", f"شناسه: {MY_CHANNEL}")
+            sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
             return formatted_body + f"\n\n{sig}"
         except Exception:
             continue
@@ -215,22 +218,22 @@ def rewrite_with_ai(raw_text):
     return clean_fallback(raw_text)
 
 # ---------------------------------------------------------
-# ارسال پست به تلگرام (مجهز به Fallback امن)
+# ارسال پست به تلگرام
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
-        return False
+        return False, "توکن ربات موجود نیست."
 
     keyboard = []
     links_row = []
     if source_url:
         links_row.append({"text": "منبع خبر", "url": source_url})
-    links_row.append({"text": "عضویت در کانال", "url": f"https://t.me/{MY_CHANNEL.replace('@', '')}"})
+    links_row.append({"text": "عضویت در کانال", "url": f"https://t.me/{MY_CHANNEL_USERNAME}"})
     keyboard.append(links_row)
     
     send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": MY_CHANNEL,
+        "chat_id": MY_CHANNEL_ID,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -239,17 +242,19 @@ def send_telegram_post(text, source_url=None):
     try:
         res = http_session.post(send_url, json=payload, timeout=5)
         if res.status_code == 200:
-            return True
+            return True, "ارسال موفق بود."
             
-        # اگر به دلیل خطای HTML رد شد، بدون HTML ارسال کن
+        # اگر خطای تگ HTML داد، متن بدون تگ فرستاده شود
         plain_text = text.replace("<b>", "").replace("</b>", "")
         payload["text"] = plain_text
         payload.pop("parse_mode", None)
         res_retry = http_session.post(send_url, json=payload, timeout=5)
-        return res_retry.status_code == 200
+        if res_retry.status_code == 200:
+            return True, "ارسال موفق بود (بدون قالب HTML)."
+        else:
+            return False, f"خطای تلگرام: {res_retry.text}"
     except Exception as e:
-        print(f"Connection Error in send_telegram_post: {e}")
-        return False
+        return False, f"خطای ارتباطی: {e}"
 
 # ---------------------------------------------------------
 # کیبوردهای پنل
@@ -476,7 +481,7 @@ def fast_panel_listener():
 
                         elif action == "panel_sig_prompt":
                             user_states[chat_id] = "WAITING_FOR_SIGNATURE"
-                            curr_sig = config_db.get("channel_signature", f"شناسه: {MY_CHANNEL}")
+                            curr_sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
                             reply = f"امضای فعلی:\n{curr_sig}\n\nمتن امضای جدید را بفرستید:"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_cancel_keyboard()
@@ -589,11 +594,12 @@ def fast_panel_listener():
 
                         elif state == "WAITING_FOR_FORCE_POST":
                             user_states[chat_id] = None
-                            sig = config_db.get("channel_signature", f"شناسه: {MY_CHANNEL}")
+                            sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
                             clean_text = sanitize_all_links(text)
                             post_text = f"<b>{clean_text[:40]}</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}"
-                            success = send_telegram_post(post_text)
-                            reply = "پست ارسال شد." if success else "خطا در ارسال."
+                            
+                            success, msg_detail = send_telegram_post(post_text)
+                            reply = "پست با موفقیت در کانال منتشر شد." if success else f"خطا در ارسال: {msg_detail}"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -634,7 +640,7 @@ def process_single_channel(channel):
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
-                        success = send_telegram_post(final_text, source_post_url)
+                        success, _ = send_telegram_post(final_text, source_post_url)
                         if success:
                             seen_post_ids.add(post_id)
                             save_seen_post(post_id)
