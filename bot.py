@@ -12,7 +12,7 @@ import google.generativeai as genai
 from flask import Flask
 
 # ---------------------------------------------------------
-# وب‌سرور زنده نگه‌داشتن ربات در Render
+# وب‌سرور زنده نگه‌داشتن ربات در Render / Replit
 # ---------------------------------------------------------
 app = Flask(__name__)
 
@@ -30,8 +30,8 @@ def health():
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
 
-MY_CHANNEL_ID = "-1002038404831"
-MY_CHANNEL_USERNAME = "Rallyir"
+# ادمین اولیه (سازنده ربات) - امکان مدیریت سایر ادمین‌ها در پنل
+INITIAL_ADMIN_ID = 123456789  # <--- آی‌دی عددی تلگرام خودتان را اینجا بگذارید
 
 if GEMINI_API_KEY:
     try:
@@ -62,15 +62,19 @@ db_lock = threading.Lock()
 def load_config():
     default_config = {
         "bot_active": True,
-        "channel_signature": f"🆔 @{MY_CHANNEL_USERNAME}",
+        "target_channel_id": "-1002038404831",
+        "target_channel_username": "Rallyir",
+        "channel_signature": "🆔 @Rallyir",
         "blacklist": ["تبلیغات", "تخفیف ویژه"],
         "golden_keywords": [],
         "golden_keywords_active": False,
         "fuzzy_check_active": True,
+        "fuzzy_threshold": 70,  # درصد حساسیت تشابه
         "quiet_hours_active": False,
         "quiet_start_hour": 0,
         "quiet_end_hour": 6,
-        "check_interval": 10
+        "check_interval": 10,
+        "admin_ids": [INITIAL_ADMIN_ID]
     }
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -90,6 +94,11 @@ def save_config(cfg):
 
 config_db = load_config()
 
+def is_admin(user_id):
+    """بررسی دسترسی ادمین"""
+    admins = config_db.get("admin_ids", [])
+    return (user_id in admins) or (user_id == INITIAL_ADMIN_ID)
+
 def load_seen_posts():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f:
@@ -103,6 +112,15 @@ def save_seen_post(post_id):
                 f.write(f"{post_id}\n")
         except Exception:
             pass
+
+def clear_seen_posts():
+    with db_lock:
+        try:
+            open(DB_FILE, "w").close()
+            seen_post_ids.clear()
+            return True
+        except Exception:
+            return False
 
 def load_channels():
     if os.path.exists(CHANNELS_FILE):
@@ -125,7 +143,7 @@ target_channels = load_channels()
 last_update_id = 0
 
 # ---------------------------------------------------------
-# پردازش متون، حذف لینک‌ها و ایموجی‌ها
+# پردازش متون، حذف لینک‌ها، ایموجی‌ها و فضاهای اضافه
 # ---------------------------------------------------------
 def remove_emojis(text):
     if not text:
@@ -143,6 +161,16 @@ def remove_emojis(text):
     )
     return emoji_pattern.sub("", text)
 
+def clean_extra_spaces(text):
+    """پاکسازی کامل فضاهای خالی و خطوط متوالی اضافه"""
+    if not text:
+        return ""
+    # تبدیل چند فاصله افقی متوالی به یک فاصله
+    text = re.sub(r'[ \t]+', ' ', text)
+    # تبدیل چند خط خالی متوالی به حداکثر ۲ انتر (یک خط خالی)
+    text = re.sub(r'\n\s*\n+', '\n\n', text)
+    return text.strip()
+
 def sanitize_all_links(text):
     """حذف کامل تمام آدرس‌های اینترنتی، لینک‌ها و آیدی‌ها"""
     if not text:
@@ -153,7 +181,7 @@ def sanitize_all_links(text):
     text = re.sub(r"https?://\S+|www\.\S+|t\.me/\S+", "", text)
     text = re.sub(r"@[A-Za-z0-9_]+", "", text)
     text = remove_emojis(text)
-    return text.strip()
+    return clean_extra_spaces(text)
 
 def check_blacklist(text):
     for word in config_db.get("blacklist", []):
@@ -171,13 +199,14 @@ def check_golden_keywords(text):
     return any(word.lower() in text.lower() for word in keywords if word)
 
 def is_fuzzy_duplicate(new_text):
-    """تشخیص شباهت متنی بدون هوش مصنوعی (Fuzzy Check)"""
+    """تشخیص شباهت متنی با حساسیت متغیر تنظیم‌شده"""
     if not config_db.get("fuzzy_check_active", True):
         return False
+    threshold = config_db.get("fuzzy_threshold", 70) / 100.0
     clean_new = sanitize_all_links(new_text)
     for past_text in recent_posts_history[-20:]:
         similarity = difflib.SequenceMatcher(None, clean_new, past_text).ratio()
-        if similarity >= 0.70:  # شباهت بالای ۷۰ درصد تکراری تلقی می‌شود
+        if similarity >= threshold:
             return True
     return False
 
@@ -186,7 +215,6 @@ def is_in_quiet_hours():
     if not config_db.get("quiet_hours_active", False):
         return False
     
-    # ساعت رسمی ایران (UTC + 3:30)
     ir_time = datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
     curr_hour = ir_time.hour
     
@@ -200,12 +228,13 @@ def is_in_quiet_hours():
 
 def clean_fallback(text):
     clean_t = sanitize_all_links(text)
-    lines = [re.sub(r"[ \t]+", " ", l.strip()) for l in clean_t.splitlines() if l.strip()]
+    lines = [l.strip() for l in clean_t.splitlines() if l.strip()]
     if not lines:
         return ""
     lines[0] = f"📌 <b>{lines[0]}</b>"
-    sig = config_db.get("channel_signature", f"🆔 @{MY_CHANNEL_USERNAME}")
-    return "\n\n".join(lines) + f"\n\n#خبر\n\n{sig}"
+    sig = config_db.get("channel_signature", f"🆔 @{config_db.get('target_channel_username', 'Rallyir')}")
+    body = "\n\n".join(lines)
+    return clean_extra_spaces(f"{body}\n\n#خبر\n\n{sig}")
 
 def rewrite_with_ai(raw_text):
     if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
@@ -242,14 +271,13 @@ def rewrite_with_ai(raw_text):
             lines[0] = f"📌 <b>{headline}</b>"
             formatted_body = "\n\n".join(lines)
 
-            sig = config_db.get("channel_signature", f"🆔 @{MY_CHANNEL_USERNAME}")
+            sig = config_db.get("channel_signature", f"🆔 @{config_db.get('target_channel_username', 'Rallyir')}")
             
-            # افزودن به تاریخچه پست‌های اخیر برای جلوگیری از تکرار
             recent_posts_history.append(sanitize_all_links(raw_text))
             if len(recent_posts_history) > 30:
                 recent_posts_history.pop(0)
 
-            return formatted_body + f"\n\n{sig}"
+            return clean_extra_spaces(f"{formatted_body}\n\n{sig}")
         except Exception:
             continue
 
@@ -262,16 +290,19 @@ def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
         return False
 
+    target_id = config_db.get("target_channel_id", "-1002038404831")
+    target_uname = config_db.get("target_channel_username", "Rallyir")
+
     keyboard = []
     links_row = []
     if source_url:
         links_row.append({"text": "🔗 منبع خبر", "url": source_url})
-    links_row.append({"text": "📢 عضویت در کانال", "url": f"https://t.me/{MY_CHANNEL_USERNAME}"})
+    links_row.append({"text": "📢 عضویت در کانال", "url": f"https://t.me/{target_uname}"})
     keyboard.append(links_row)
     
     send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": MY_CHANNEL_ID,
+        "chat_id": target_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -323,13 +354,18 @@ def get_main_panel_keyboard():
             ],
             [
                 {"text": f"{golden_st} کلیدواژه‌های طلایی", "callback_data": "panel_golden_menu"},
-                {"text": f"{fuzzy_st} عدم تکرار هوشمند", "callback_data": "toggle_fuzzy_status"}
+                {"text": f"{fuzzy_st} تنظیمات عدم تکرار", "callback_data": "panel_fuzzy_menu"}
             ],
             [
-                {"text": f"{quiet_st} خاموشی خودکار (شبانه)", "callback_data": "toggle_quiet_status"},
-                {"text": "⚡️ ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
+                {"text": f"{quiet_st} ساعت خاموشی", "callback_data": "panel_quiet_menu"},
+                {"text": "🎯 تغییر کانال مقصد", "callback_data": "panel_target_channel_prompt"}
             ],
             [
+                {"text": "👑 مدیریت ادمین‌ها", "callback_data": "panel_admins_menu"},
+                {"text": "💾 دیتابیس و ریست", "callback_data": "panel_backup_reset_menu"}
+            ],
+            [
+                {"text": "⚡️ ارسال پست دستی", "callback_data": "panel_force_post_prompt"},
                 {"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}
             ]
         ]
@@ -341,6 +377,73 @@ def get_cancel_keyboard():
             [{"text": "🚫 انصراف و بازگشت به پنل", "callback_data": "cancel_action"}]
         ]
     }
+
+def get_fuzzy_keyboard():
+    fuzzy_st = "🔴 غیرفعال" if not config_db.get("fuzzy_check_active", True) else "🟢 فعال"
+    thresh = config_db.get("fuzzy_threshold", 70)
+    return {
+        "inline_keyboard": [
+            [{"text": f"وضعیت سیستم: {fuzzy_st}", "callback_data": "toggle_fuzzy_status"}],
+            [
+                {"text": "50%", "callback_data": "set_fuzzy_50"},
+                {"text": "60%", "callback_data": "set_fuzzy_60"},
+                {"text": f"• {thresh}% •", "callback_data": "noop"},
+                {"text": "80%", "callback_data": "set_fuzzy_80"},
+                {"text": "90%", "callback_data": "set_fuzzy_90"}
+            ],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
+        ]
+    }
+
+def get_quiet_keyboard():
+    quiet_st = "🔴 غیرفعال" if not config_db.get("quiet_hours_active", False) else "🟢 فعال"
+    sh = config_db.get("quiet_start_hour", 0)
+    eh = config_db.get("quiet_end_hour", 6)
+    return {
+        "inline_keyboard": [
+            [{"text": f"وضعیت خاموشی: {quiet_st}", "callback_data": "toggle_quiet_status"}],
+            [
+                {"text": f"⏰ شروع: {sh:02d}:00", "callback_data": "set_quiet_start_prompt"},
+                {"text": f"⏰ پایان: {eh:02d}:00", "callback_data": "set_quiet_end_prompt"}
+            ],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
+        ]
+    }
+
+def get_hour_picker_keyboard(action_prefix):
+    keyboard = []
+    row = []
+    for h in range(24):
+        row.append({"text": f"{h:02d}:00", "callback_data": f"{action_prefix}_{h}"})
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([{"text": "🚫 انصراف", "callback_data": "panel_quiet_menu"}])
+    return {"inline_keyboard": keyboard}
+
+def get_backup_reset_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📥 دانلود بک‌آپ (تنظیمات)", "callback_data": "download_config_file"},
+                {"text": "📥 دانلود دیتابیس (اخبار)", "callback_data": "download_db_file"}
+            ],
+            [{"text": "🧹 ریست حافظه اخبار دیده‌شده", "callback_data": "reset_db_confirm_prompt"}],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
+        ]
+    }
+
+def get_admins_keyboard():
+    keyboard = []
+    keyboard.append([{"text": "➕ افزودن ادمین جدید", "callback_data": "add_admin_prompt"}])
+    admins = config_db.get("admin_ids", [])
+    for adm in admins:
+        if adm != INITIAL_ADMIN_ID:
+            keyboard.append([{"text": f"❌ حذف ادمین {adm}", "callback_data": f"del_admin_{adm}"}])
+    keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
+    return {"inline_keyboard": keyboard}
 
 def get_bulk_delete_keyboard(chat_id):
     keyboard = []
@@ -430,12 +533,22 @@ def fast_panel_listener():
                 for update in data.get("result", []):
                     last_update_id = update["update_id"]
                     
+                    # پردازش Callback Query
                     if "callback_query" in update:
                         cb = update["callback_query"]
                         cb_id = cb.get("id")
                         action = cb.get("data")
                         msg = cb.get("message", {})
                         chat_id = msg.get("chat", {}).get("id")
+                        from_user_id = cb.get("from", {}).get("id")
+
+                        # قفل امنیت ادمین
+                        if not is_admin(from_user_id):
+                            try:
+                                http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": "⛔️ شما دسترسی ادمین ندارید.", "show_alert": True}, timeout=2)
+                            except Exception:
+                                pass
+                            continue
 
                         try:
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=2)
@@ -460,24 +573,154 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
+                        # --- منوی عدم تکرار متون ---
+                        elif action == "panel_fuzzy_menu":
+                            reply = (
+                                f"🔍 **تنظیمات عدم تکرار هوشمند**\n\n"
+                                f"حساسیت فعلی: **{config_db.get('fuzzy_threshold', 70)}%**\n"
+                                f"هرچه درصد را بالاتر ببرید، حساسیت کمتر شده و متون فقط در صورت شباهت بسیار زیاد فیلتر می‌شوند."
+                            )
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_fuzzy_keyboard()
+                            }, timeout=3)
+
                         elif action == "toggle_fuzzy_status":
                             config_db["fuzzy_check_active"] = not config_db.get("fuzzy_check_active", True)
                             save_config(config_db)
-                            st_text = "🟢 **فعال شد (جلوگیری از پست‌های مشابه)**" if config_db["fuzzy_check_active"] else "🔴 **غیرفعال شد**"
-                            reply = f"وضعیت عدم تکرار هوشمند: {st_text}"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                                "chat_id": chat_id, "text": "✅ وضعیت بررسی شباهت تغییر کرد.", "reply_markup": get_fuzzy_keyboard()
+                            }, timeout=3)
+
+                        elif action.startswith("set_fuzzy_"):
+                            val = int(action.replace("set_fuzzy_", ""))
+                            config_db["fuzzy_threshold"] = val
+                            save_config(config_db)
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": f"✅ حساسیت روی {val}% تنظیم شد.", "reply_markup": get_fuzzy_keyboard()
+                            }, timeout=3)
+
+                        # --- منوی ساعت خاموشی ---
+                        elif action == "panel_quiet_menu":
+                            sh = config_db.get("quiet_start_hour", 0)
+                            eh = config_db.get("quiet_end_hour", 6)
+                            reply = f"🌙 **تنظیمات خاموشی شبانه**\n\nبازه فعلی: از ساعت **{sh:02d}:00** تا **{eh:02d}:00**"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
 
                         elif action == "toggle_quiet_status":
                             config_db["quiet_hours_active"] = not config_db.get("quiet_hours_active", False)
                             save_config(config_db)
-                            st_text = "🟢 **فعال شد (خاموشی از ۰۰:۰۰ تا ۰۶:۰۰ صبح)**" if config_db["quiet_hours_active"] else "🔴 **غیرفعال شد**"
-                            reply = f"وضعیت خاموشی خودکار: {st_text}"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ وضعیت خاموشی شبانه تغییر کرد.", "reply_markup": get_quiet_keyboard()
+                            }, timeout=3)
+
+                        elif action == "set_quiet_start_prompt":
+                            reply = "⏰ **ساعت شروع خاموشی را انتخاب کنید:**"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_hour_picker_keyboard("qstart")
+                            }, timeout=3)
+
+                        elif action.startswith("qstart_"):
+                            h = int(action.replace("qstart_", ""))
+                            config_db["quiet_start_hour"] = h
+                            save_config(config_db)
+                            reply = f"✅ ساعت شروع روی **{h:02d}:00** تنظیم شد."
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
+                            }, timeout=3)
+
+                        elif action == "set_quiet_end_prompt":
+                            reply = "⏰ **ساعت پایان خاموشی را انتخاب کنید:**"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_hour_picker_keyboard("qend")
+                            }, timeout=3)
+
+                        elif action.startswith("qend_"):
+                            h = int(action.replace("qend_", ""))
+                            config_db["quiet_end_hour"] = h
+                            save_config(config_db)
+                            reply = f"✅ ساعت پایان روی **{h:02d}:00** تنظیم شد."
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
+                            }, timeout=3)
+
+                        # --- مدیریت کانال مقصد ---
+                        elif action == "panel_target_channel_prompt":
+                            user_states[chat_id] = "WAITING_FOR_TARGET_CHANNEL"
+                            curr_id = config_db.get("target_channel_id", "-1002038404831")
+                            curr_un = config_db.get("target_channel_username", "Rallyir")
+                            reply = (
+                                f"🎯 **تغییر کانال مقصد**\n\n"
+                                f"کانال فعلی: `{curr_id}` (@{curr_un})\n\n"
+                                f"لطفاً اطلاعات کانال جدید را به فرمت زیر ارسال کنید:\n"
+                                f"`آیدی_عددی یوزرنیم`\n\n"
+                                f"مثال:\n`-100123456789 mychannel`"
+                            )
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                            }, timeout=3)
+
+                        # --- مدیریت دیتابیس و بک‌آپ ---
+                        elif action == "panel_backup_reset_menu":
+                            reply = "💾 **مدیریت دیتابیس و پشتیبان‌گیری**\n\nاز گزینه‌های زیر استفاده کنید:"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_backup_reset_keyboard()
+                            }, timeout=3)
+
+                        elif action == "download_config_file":
+                            if os.path.exists(CONFIG_FILE):
+                                with open(CONFIG_FILE, "rb") as f:
+                                    http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
+                            else:
+                                http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ فایل تنظیمات یافت نشد."}, timeout=3)
+
+                        elif action == "download_db_file":
+                            if os.path.exists(DB_FILE):
+                                with open(DB_FILE, "rb") as f:
+                                    http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
+                            else:
+                                http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ فایل دیتابیس یافت نشد."}, timeout=3)
+
+                        elif action == "reset_db_confirm_prompt":
+                            if clear_seen_posts():
+                                reply = "🧹 **حافظه اخبار دیده‌شده با موفقیت پاک‌سازی شد.**"
+                            else:
+                                reply = "❌ **خطا در پاک‌سازی حافظه.**"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
+                        # --- مدیریت ادمین‌ها ---
+                        elif action == "panel_admins_menu":
+                            admins = config_db.get("admin_ids", [])
+                            adm_list = "\n".join([f"• `{a}`" for a in admins])
+                            reply = f"👑 **لیست ادمین‌های ربات:**\n\n{adm_list}"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
+                            }, timeout=3)
+
+                        elif action == "add_admin_prompt":
+                            user_states[chat_id] = "WAITING_FOR_NEW_ADMIN"
+                            reply = "👑 **شناسه عددی (Numeric User ID) ادمین جدید را ارسال کنید:**"
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                            }, timeout=3)
+
+                        elif action.startswith("del_admin_"):
+                            adm_id = int(action.replace("del_admin_", ""))
+                            admins = config_db.get("admin_ids", [])
+                            if adm_id in admins and adm_id != INITIAL_ADMIN_ID:
+                                admins.remove(adm_id)
+                                save_config(config_db)
+                                reply = f"❌ ادمین `{adm_id}` حذف شد."
+                            else:
+                                reply = "⚠️ امکان حذف این ادمین وجود ندارد."
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
+                            }, timeout=3)
+
+                        # سایر گزینه‌های قبلی پنل
                         elif action == "panel_golden_menu":
                             gk = config_db.get("golden_keywords", [])
                             gk_text = "\n".join([f"• `{w}`" for w in gk]) if gk else "هیچ کلمه طلایی تعریف نشده است."
@@ -604,7 +847,7 @@ def fast_panel_listener():
 
                         elif action == "panel_sig_prompt":
                             user_states[chat_id] = "WAITING_FOR_SIGNATURE"
-                            curr_sig = config_db.get("channel_signature", f"🆔 @{MY_CHANNEL_USERNAME}")
+                            curr_sig = config_db.get("channel_signature", f"🆔 @{config_db.get('target_channel_username', 'Rallyir')}")
                             reply = f"✏️ **امضای فعلی:**\n`{curr_sig}`\n\nمتن امضای جدید را بفرستید:"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
@@ -651,14 +894,19 @@ def fast_panel_listener():
                             fuzzy_icon = "🟢 فعال" if config_db.get("fuzzy_check_active", True) else "🔴 غیرفعال"
                             quiet_icon = "🟢 فعال" if config_db.get("quiet_hours_active", False) else "🔴 غیرفعال"
 
+                            sh = config_db.get("quiet_start_hour", 0)
+                            eh = config_db.get("quiet_end_hour", 6)
+
                             reply = (
                                 f"📊 **گزارش و آمار جامع ربات**\n\n"
                                 f"⚙️ **وضعیت کلی:** {st_icon}\n"
+                                f"📢 **کانال مقصد:** `{config_db.get('target_channel_id')}` (@{config_db.get('target_channel_username')})\n"
                                 f"⏱ **فاصله بررسی:** {config_db.get('check_interval', 10)} ثانیه\n"
-                                f"📢 **کانال‌ها:** {len(target_channels)} از ۲۰\n"
+                                f"📡 **کانال‌های ورودی:** {len(target_channels)} از ۲۰\n"
                                 f"🎯 **فیلتر کلمات طلایی:** {gold_icon} ({len(config_db.get('golden_keywords', []))} کلمه)\n"
-                                f"🔍 **عدم تکرار هوشمند:** {fuzzy_icon}\n"
-                                f"🌙 **خاموشی شبانه:** {quiet_icon} (۰۰:۰۰ تا ۰۶:۰۰)\n"
+                                f"🔍 **عدم تکرار هوشمند:** {fuzzy_icon} (حساسیت {config_db.get('fuzzy_threshold', 70)}%)\n"
+                                f"🌙 **خاموشی شبانه:** {quiet_icon} ({sh:02d}:00 تا {eh:02d}:00)\n"
+                                f"👑 **تعداد ادمین‌ها:** {len(config_db.get('admin_ids', []))}\n"
                                 f"✅ **اخبار ارسال‌شده:** {len(seen_post_ids)}\n"
                                 f"🚫 **کلمات فیلتر سیاه:** {len(config_db.get('blacklist', []))}"
                             )
@@ -666,12 +914,14 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
+                    # پردازش پیام‌های متنی
                     elif "message" in update:
                         message = update["message"]
                         chat_id = message.get("chat", {}).get("id")
+                        from_user_id = message.get("from", {}).get("id")
                         text = message.get("text", "").strip()
 
-                        if not text:
+                        if not text or not is_admin(from_user_id):
                             continue
 
                         if text in ["لغو", "/cancel", "انصراف", "کنسل"]:
@@ -683,7 +933,41 @@ def fast_panel_listener():
 
                         state = user_states.get(chat_id)
 
-                        if state == "WAITING_FOR_CHANNEL_NAME":
+                        if state == "WAITING_FOR_TARGET_CHANNEL":
+                            user_states[chat_id] = None
+                            parts = text.split()
+                            if len(parts) >= 2:
+                                new_id = parts[0].strip()
+                                new_un = parts[1].replace("@", "").strip()
+                                config_db["target_channel_id"] = new_id
+                                config_db["target_channel_username"] = new_un
+                                save_config(config_db)
+                                reply = f"✅ **کانال مقصد تغییر یافت:**\n`{new_id}` (@{new_un})"
+                            else:
+                                reply = "❌ فرمت ورودی اشتباه است. باید به صورت `آیدی یوزرنیم` بفرستید."
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif state == "WAITING_FOR_NEW_ADMIN":
+                            user_states[chat_id] = None
+                            try:
+                                new_adm = int(text.strip())
+                                admins = config_db.get("admin_ids", [])
+                                if new_adm not in admins:
+                                    admins.append(new_adm)
+                                    config_db["admin_ids"] = admins
+                                    save_config(config_db)
+                                    reply = f"✅ ادمین جدید `{new_adm}` اضافه شد."
+                                else:
+                                    reply = "⚠️ این ادمین قبلاً اضافه شده است."
+                            except Exception:
+                                reply = "❌ شناسه عددی نامعتبر است."
+                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
+                            }, timeout=3)
+
+                        elif state == "WAITING_FOR_CHANNEL_NAME":
                             user_states[chat_id] = None
                             new_ch = text.replace("@", "").replace("https://t.me/", "").strip()
                             if len(target_channels) >= 20:
@@ -739,9 +1023,9 @@ def fast_panel_listener():
 
                         elif state == "WAITING_FOR_FORCE_POST":
                             user_states[chat_id] = None
-                            sig = config_db.get("channel_signature", f"🆔 @{MY_CHANNEL_USERNAME}")
+                            sig = config_db.get("channel_signature", f"🆔 @{config_db.get('target_channel_username', 'Rallyir')}")
                             clean_text = sanitize_all_links(text)
-                            post_text = f"📌 <b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}"
+                            post_text = clean_extra_spaces(f"📌 <b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}")
                             
                             success = send_telegram_post(post_text)
                             reply = "🚀 **پست با موفقیت در کانال منتشر شد.**" if success else "❌ خطا در ارسال پست."
@@ -766,7 +1050,6 @@ def process_single_channel(channel):
     if not config_db.get("bot_active", True) or channel not in target_channels:
         return
 
-    # بررسی ساعات خاموشی شبانه
     if is_in_quiet_hours():
         return
 
@@ -824,7 +1107,7 @@ def self_ping_loop():
             http_session.get(health_url, timeout=5)
         except Exception:
             pass
-        time.sleep(240)  # هر ۴ دقیقه یک‌بار پینگ زنده می‌فرستد
+        time.sleep(240)
 
 # ---------------------------------------------------------
 # اجرا
