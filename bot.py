@@ -23,7 +23,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ---------------------------------------------------------
-# تنظیمات اولیه و خواندن ایمن کلیدها (جلوگیری از کرش)
+# تنظیمات اولیه و خواندن ایمن کلیدها
 # ---------------------------------------------------------
 raw_bot_token = os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I"
 raw_gemini_key = os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A"
@@ -36,7 +36,7 @@ if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
     except Exception as e:
-        print(f"⚠️ Gemini Init Warning: {e}")
+        print(f"Gemini Init Warning: {e}")
 
 http_session = requests.Session()
 http_session.headers.update({
@@ -79,7 +79,7 @@ def save_config(cfg):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"⚠️ Config Save Error: {e}")
+        print(f"Config Save Error: {e}")
 
 config_db = load_config()
 
@@ -215,11 +215,10 @@ def rewrite_with_ai(raw_text):
     return clean_fallback(raw_text)
 
 # ---------------------------------------------------------
-# ارسال پست به تلگرام
+# ارسال پست به تلگرام (مجهز به Fallback امن)
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
-        print("❌ BOT_TOKEN is empty!")
         return False
 
     keyboard = []
@@ -239,12 +238,17 @@ def send_telegram_post(text, source_url=None):
     }
     try:
         res = http_session.post(send_url, json=payload, timeout=5)
-        if res.status_code != 200:
-            print(f"❌ Telegram Error [{res.status_code}]: {res.text}")
-            return False
-        return True
+        if res.status_code == 200:
+            return True
+            
+        # اگر به دلیل خطای HTML رد شد، بدون HTML ارسال کن
+        plain_text = text.replace("<b>", "").replace("</b>", "")
+        payload["text"] = plain_text
+        payload.pop("parse_mode", None)
+        res_retry = http_session.post(send_url, json=payload, timeout=5)
+        return res_retry.status_code == 200
     except Exception as e:
-        print(f"❌ Connection Error in send_telegram_post: {e}")
+        print(f"Connection Error in send_telegram_post: {e}")
         return False
 
 # ---------------------------------------------------------
@@ -331,7 +335,7 @@ def get_cancel_keyboard():
 # ---------------------------------------------------------
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
-    print("📡 Fast panel listener started...")
+    print("Fast panel listener started...")
     
     while True:
         try:
@@ -601,7 +605,7 @@ def fast_panel_listener():
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
-        except Exception as e:
+        except Exception:
             time.sleep(1)
 
 # ---------------------------------------------------------
@@ -660,5 +664,5 @@ flask_thread.start()
 news_thread = threading.Thread(target=fetch_news_loop, daemon=True)
 news_thread.start()
 
-print("🚀 Bot starting...")
+print("Bot starting...")
 fast_panel_listener()
