@@ -262,7 +262,8 @@ def rewrite_with_ai(raw_text):
         f"متن خبر:\n{raw_text}"
     )
 
-    for model_name in ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash']:
+    # تست امن و هوشمند مدل‌های استاندارد و جدید گوگل
+    for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash']:
         try:
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
@@ -291,7 +292,6 @@ def rewrite_with_ai(raw_text):
 
     return clean_fallback(raw_text)
 
-# ارسال به تمام کانال‌های مقصد تعریف‌شده
 def send_telegram_post_to_all(text, source_url=None):
     if not BOT_TOKEN or not target_destinations:
         return False
@@ -333,7 +333,6 @@ def send_telegram_post_to_all(text, source_url=None):
             pass
     return success_any
 
-# کیبوردهای پنل مدیریت
 def get_main_panel_keyboard():
     status_icon = "🟢" if config_db.get("bot_active", True) else "🔴"
     status_text = "خاموش کردن ربات" if config_db.get("bot_active", True) else "روشن کردن ربات"
@@ -523,9 +522,6 @@ def get_interval_keyboard():
         ]
     }
 
-# ---------------------------------------------------------
-# شنونده پنل مدیریت
-# ---------------------------------------------------------
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete, recent_posts_history, target_destinations
     print("Bot fast listener is online...")
@@ -574,7 +570,6 @@ def fast_panel_listener():
                         except Exception:
                             pass
 
-                        # --- مدیریت کانال‌های مقصد ---
                         if action == "panel_targets_menu":
                             targets_info = "\n".join([f"• `{d['chat_id']}` (@{d['username']})" for d in target_destinations])
                             reply = f"🎯 **مدیریت کانال‌های مقصد**\n\nکانال‌های فعلی:\n{targets_info}"
@@ -607,13 +602,13 @@ def fast_panel_listener():
                                 ai_model = genai.GenerativeModel('gemini-2.5-flash')
                                 resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
                                 if resp and resp.text:
-                                    test_status = f"✅ هوش مصنوعی سالم است.\nپاسخ: {resp.text.strip()[:60]}..."
+                                    test_status = f"✅ هوش مصنوعی کاملاً سالم است.\nپاسخ: {resp.text.strip()[:60]}..."
                             except Exception:
                                 try:
-                                    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+                                    ai_model = genai.GenerativeModel('gemini-2.0-flash')
                                     resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
                                     if resp and resp.text:
-                                        test_status = f"✅ هوش مصنوعی سالم است.\nپاسخ: {resp.text.strip()[:60]}..."
+                                        test_status = f"✅ هوش مصنوعی کاملاً سالم است.\nپاسخ: {resp.text.strip()[:60]}..."
                                 except Exception as e2:
                                     test_status = f"❌ خطای هوش مصنوعی: {str(e2)[:80]}"
                             
