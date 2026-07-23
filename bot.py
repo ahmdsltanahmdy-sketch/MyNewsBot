@@ -23,7 +23,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ---------------------------------------------------------
-# تنظیمات اولیه و خواندن ایمن کلیدها
+# تنظیمات اولیه و کلیدها
 # ---------------------------------------------------------
 raw_bot_token = os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I"
 raw_gemini_key = os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A"
@@ -31,7 +31,7 @@ raw_gemini_key = os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzh
 BOT_TOKEN = raw_bot_token.strip() if raw_bot_token else ""
 GEMINI_API_KEY = raw_gemini_key.strip() if raw_gemini_key else ""
 
-# استفاده از Chat ID عددی مستقیم کانال شما برای جلوگیری از خطای تلگرام
+# Chat ID عددی کانال شما جهت ارسال مطمئن
 MY_CHANNEL_ID = "-1002038404831"
 MY_CHANNEL_USERNAME = "Rallyir"
 
@@ -222,7 +222,7 @@ def rewrite_with_ai(raw_text):
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
-        return False, "توکن ربات موجود نیست."
+        return False
 
     keyboard = []
     links_row = []
@@ -242,19 +242,17 @@ def send_telegram_post(text, source_url=None):
     try:
         res = http_session.post(send_url, json=payload, timeout=5)
         if res.status_code == 200:
-            return True, "ارسال موفق بود."
+            return True
             
-        # اگر خطای تگ HTML داد، متن بدون تگ فرستاده شود
+        # ارسال بدون قالب HTML در صورت وجود خطای کاراکتر
         plain_text = text.replace("<b>", "").replace("</b>", "")
         payload["text"] = plain_text
         payload.pop("parse_mode", None)
         res_retry = http_session.post(send_url, json=payload, timeout=5)
-        if res_retry.status_code == 200:
-            return True, "ارسال موفق بود (بدون قالب HTML)."
-        else:
-            return False, f"خطای تلگرام: {res_retry.text}"
+        return res_retry.status_code == 200
     except Exception as e:
-        return False, f"خطای ارتباطی: {e}"
+        print(f"Connection Error: {e}")
+        return False
 
 # ---------------------------------------------------------
 # کیبوردهای پنل
@@ -598,8 +596,8 @@ def fast_panel_listener():
                             clean_text = sanitize_all_links(text)
                             post_text = f"<b>{clean_text[:40]}</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}"
                             
-                            success, msg_detail = send_telegram_post(post_text)
-                            reply = "پست با موفقیت در کانال منتشر شد." if success else f"خطا در ارسال: {msg_detail}"
+                            success = send_telegram_post(post_text)
+                            reply = "پست با موفقیت در کانال منتشر شد." if success else "خطا در ارسال پست. چک کنید ربات در کانال ادمین باشد."
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -640,7 +638,7 @@ def process_single_channel(channel):
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
-                        success, _ = send_telegram_post(final_text, source_post_url)
+                        success = send_telegram_post(final_text, source_post_url)
                         if success:
                             seen_post_ids.add(post_id)
                             save_seen_post(post_id)
