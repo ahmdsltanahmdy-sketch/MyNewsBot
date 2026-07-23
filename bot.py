@@ -9,33 +9,23 @@ from bs4 import BeautifulSoup
 import google.generativeai as genai
 from flask import Flask
 
-# ---------------------------------------------------------
-# وب‌سرور زنده نگه‌داشتن ربات در Render
-# ---------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running efficiently!"
+    return "Bot is running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
-# ---------------------------------------------------------
-# تنظیمات اولیه و خواندن کلیدها از Environment
-# ---------------------------------------------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# مقداردهی مستقیم برای تست نهایی
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A")
 MY_CHANNEL = "@Rallyir"
-
-if not BOT_TOKEN:
-    print("❌ خطا: متغیر BOT_TOKEN در Environment تنظیم نشده است!")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-else:
-    print("⚠️ هشدار: متغیر GEMINI_API_KEY در Environment یافت نشد.")
 
 http_session = requests.Session()
 http_session.headers.update({
@@ -46,7 +36,6 @@ DB_FILE = "seen_posts.txt"
 CHANNELS_FILE = "channels.txt"
 CONFIG_FILE = "config.json"
 
-# ۱۰ کانال اولیه پیش‌فرض
 DEFAULT_CHANNELS = [
     "Tasnimnews", "FarsNewsInt", "IRNA_1313", "ISNAFA", 
     "KhabarOnline_ir", "Mehrnews", "YjcNewsChannel", 
@@ -108,11 +97,7 @@ seen_post_ids = load_seen_posts()
 target_channels = load_channels()
 last_update_id = 0
 
-# ---------------------------------------------------------
-# پردازش متن و فیلتر ایموجی
-# ---------------------------------------------------------
 def remove_emojis(text):
-    """حذف تمام ایموجی‌ها و کاراکترهای یونیکد بصری"""
     if not text:
         return ""
     emoji_pattern = re.compile(
@@ -206,13 +191,7 @@ def rewrite_with_ai(raw_text):
 
     return clean_fallback(raw_text)
 
-# ---------------------------------------------------------
-# ارسال پست به تلگرام
-# ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
-    if not BOT_TOKEN:
-        return False
-        
     keyboard = []
     links_row = []
     if source_url:
@@ -234,9 +213,6 @@ def send_telegram_post(text, source_url=None):
     except Exception:
         return False
 
-# ---------------------------------------------------------
-# کیبوردهای پنل
-# ---------------------------------------------------------
 def get_main_panel_keyboard():
     status_text = "خاموش کردن ربات" if config_db.get("bot_active", True) else "روشن کردن ربات"
     interval = config_db.get("check_interval", 10)
@@ -313,16 +289,9 @@ def get_interval_keyboard():
 def get_cancel_keyboard():
     return {"inline_keyboard": [[{"text": "لغو عملیات", "callback_data": "cancel_action"}]]}
 
-# ---------------------------------------------------------
-# شنونده دستورات پنل
-# ---------------------------------------------------------
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
     while True:
-        if not BOT_TOKEN:
-            time.sleep(5)
-            continue
-
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=1"
             res = http_session.get(url, timeout=3).json()
@@ -579,9 +548,6 @@ def fast_panel_listener():
         except Exception:
             time.sleep(1)
 
-# ---------------------------------------------------------
-# بررسی موازی تک‌تک کانال‌ها
-# ---------------------------------------------------------
 def process_single_channel(channel):
     if not config_db.get("bot_active", True) or channel not in target_channels:
         return
@@ -626,9 +592,6 @@ def fetch_news_loop():
             else:
                 time.sleep(3)
 
-# ---------------------------------------------------------
-# اجرا
-# ---------------------------------------------------------
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
