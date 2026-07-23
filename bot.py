@@ -30,8 +30,8 @@ def health():
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
 
-# ادمین اولیه (سازنده ربات) - امکان مدیریت سایر ادمین‌ها در پنل
-INITIAL_ADMIN_ID = 123456789  # <--- آی‌دی عددی تلگرام خودتان را اینجا بگذارید
+# ادمین اصلی سیستم (آی‌دی ثبت‌شده شما)
+INITIAL_ADMIN_ID = 97241647
 
 if GEMINI_API_KEY:
     try:
@@ -69,7 +69,7 @@ def load_config():
         "golden_keywords": [],
         "golden_keywords_active": False,
         "fuzzy_check_active": True,
-        "fuzzy_threshold": 70,  # درصد حساسیت تشابه
+        "fuzzy_threshold": 70,
         "quiet_hours_active": False,
         "quiet_start_hour": 0,
         "quiet_end_hour": 6,
@@ -83,6 +83,8 @@ def load_config():
                 default_config.update(data)
             except Exception:
                 pass
+    if INITIAL_ADMIN_ID not in default_config.get("admin_ids", []):
+        default_config.setdefault("admin_ids", []).append(INITIAL_ADMIN_ID)
     return default_config
 
 def save_config(cfg):
@@ -101,14 +103,14 @@ def is_admin(user_id):
 
 def load_seen_posts():
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
             return set(line.strip() for line in f if line.strip())
     return set()
 
 def save_seen_post(post_id):
     with db_lock:
         try:
-            with open(DB_FILE, "a") as f:
+            with open(DB_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{post_id}\n")
         except Exception:
             pass
@@ -116,7 +118,7 @@ def save_seen_post(post_id):
 def clear_seen_posts():
     with db_lock:
         try:
-            open(DB_FILE, "w").close()
+            open(DB_FILE, "w", encoding="utf-8").close()
             seen_post_ids.clear()
             return True
         except Exception:
@@ -124,7 +126,7 @@ def clear_seen_posts():
 
 def load_channels():
     if os.path.exists(CHANNELS_FILE):
-        with open(CHANNELS_FILE, "r") as f:
+        with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
             channels = [line.strip() for line in f if line.strip()]
             if channels:
                 return channels[:20]
@@ -132,7 +134,7 @@ def load_channels():
 
 def save_channels(channels):
     try:
-        with open(CHANNELS_FILE, "w") as f:
+        with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
             for ch in channels[:20]:
                 f.write(f"{ch}\n")
     except Exception:
@@ -165,9 +167,7 @@ def clean_extra_spaces(text):
     """پاکسازی کامل فضاهای خالی و خطوط متوالی اضافه"""
     if not text:
         return ""
-    # تبدیل چند فاصله افقی متوالی به یک فاصله
     text = re.sub(r'[ \t]+', ' ', text)
-    # تبدیل چند خط خالی متوالی به حداکثر ۲ انتر (یک خط خالی)
     text = re.sub(r'\n\s*\n+', '\n\n', text)
     return text.strip()
 
@@ -190,7 +190,6 @@ def check_blacklist(text):
     return False
 
 def check_golden_keywords(text):
-    """بررسی فیلتر کلمات طلایی"""
     if not config_db.get("golden_keywords_active", False):
         return True
     keywords = config_db.get("golden_keywords", [])
@@ -199,7 +198,6 @@ def check_golden_keywords(text):
     return any(word.lower() in text.lower() for word in keywords if word)
 
 def is_fuzzy_duplicate(new_text):
-    """تشخیص شباهت متنی با حساسیت متغیر تنظیم‌شده"""
     if not config_db.get("fuzzy_check_active", True):
         return False
     threshold = config_db.get("fuzzy_threshold", 70) / 100.0
@@ -211,7 +209,6 @@ def is_fuzzy_duplicate(new_text):
     return False
 
 def is_in_quiet_hours():
-    """بررسی وضعیت خاموشی خودکار (ساعت رسمی ایران)"""
     if not config_db.get("quiet_hours_active", False):
         return False
     
@@ -533,7 +530,6 @@ def fast_panel_listener():
                 for update in data.get("result", []):
                     last_update_id = update["update_id"]
                     
-                    # پردازش Callback Query
                     if "callback_query" in update:
                         cb = update["callback_query"]
                         cb_id = cb.get("id")
@@ -542,7 +538,6 @@ def fast_panel_listener():
                         chat_id = msg.get("chat", {}).get("id")
                         from_user_id = cb.get("from", {}).get("id")
 
-                        # قفل امنیت ادمین
                         if not is_admin(from_user_id):
                             try:
                                 http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": "⛔️ شما دسترسی ادمین ندارید.", "show_alert": True}, timeout=2)
@@ -573,7 +568,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
-                        # --- منوی عدم تکرار متون ---
                         elif action == "panel_fuzzy_menu":
                             reply = (
                                 f"🔍 **تنظیمات عدم تکرار هوشمند**\n\n"
@@ -599,7 +593,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": f"✅ حساسیت روی {val}% تنظیم شد.", "reply_markup": get_fuzzy_keyboard()
                             }, timeout=3)
 
-                        # --- منوی ساعت خاموشی ---
                         elif action == "panel_quiet_menu":
                             sh = config_db.get("quiet_start_hour", 0)
                             eh = config_db.get("quiet_end_hour", 6)
@@ -645,7 +638,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
 
-                        # --- مدیریت کانال مقصد ---
                         elif action == "panel_target_channel_prompt":
                             user_states[chat_id] = "WAITING_FOR_TARGET_CHANNEL"
                             curr_id = config_db.get("target_channel_id", "-1002038404831")
@@ -661,7 +653,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
-                        # --- مدیریت دیتابیس و بک‌آپ ---
                         elif action == "panel_backup_reset_menu":
                             reply = "💾 **مدیریت دیتابیس و پشتیبان‌گیری**\n\nاز گزینه‌های زیر استفاده کنید:"
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
@@ -691,7 +682,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
-                        # --- مدیریت ادمین‌ها ---
                         elif action == "panel_admins_menu":
                             admins = config_db.get("admin_ids", [])
                             adm_list = "\n".join([f"• `{a}`" for a in admins])
@@ -720,7 +710,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
                             }, timeout=3)
 
-                        # سایر گزینه‌های قبلی پنل
                         elif action == "panel_golden_menu":
                             gk = config_db.get("golden_keywords", [])
                             gk_text = "\n".join([f"• `{w}`" for w in gk]) if gk else "هیچ کلمه طلایی تعریف نشده است."
@@ -914,7 +903,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
-                    # پردازش پیام‌های متنی
                     elif "message" in update:
                         message = update["message"]
                         chat_id = message.get("chat", {}).get("id")
@@ -1085,12 +1073,15 @@ def process_single_channel(channel):
 def fetch_news_loop():
     with ThreadPoolExecutor(max_workers=5) as executor:
         while True:
-            if config_db.get("bot_active", True):
-                interval = config_db.get("check_interval", 10)
-                active_channels = list(target_channels)
-                executor.map(process_single_channel, active_channels)
-                time.sleep(interval)
-            else:
+            try:
+                if config_db.get("bot_active", True):
+                    interval = config_db.get("check_interval", 10)
+                    active_channels = list(target_channels)
+                    executor.map(process_single_channel, active_channels)
+                    time.sleep(interval)
+                else:
+                    time.sleep(3)
+            except Exception:
                 time.sleep(3)
 
 # ---------------------------------------------------------
