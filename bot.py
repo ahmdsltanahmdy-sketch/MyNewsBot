@@ -16,14 +16,14 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running perfectly!"
+    return "News Bot is running perfectly at peak performance!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ---------------------------------------------------------
-# تنظیمات اولیه و خواندن کلیدها
+# تنظیمات اولیه و کلیدها
 # ---------------------------------------------------------
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
@@ -46,13 +46,13 @@ DB_FILE = "seen_posts.txt"
 CHANNELS_FILE = "channels.txt"
 CONFIG_FILE = "config.json"
 
+# ۱۰ کانال اولیه
 DEFAULT_CHANNELS = [
     "Tasnimnews", "FarsNewsInt", "IRNA_1313", "ISNAFA", 
     "KhabarOnline_ir", "Mehrnews", "YjcNewsChannel", 
     "mashreghnews_channel", "Jahan_Fouri", "jamarannews"
 ]
 
-recent_news_summaries = []
 user_states = {}
 selected_channels_for_bulk_delete = {}
 db_lock = threading.Lock()
@@ -117,7 +117,7 @@ target_channels = load_channels()
 last_update_id = 0
 
 # ---------------------------------------------------------
-# پاک‌سازی متن و فیلتر ایموجی
+# پاک‌سازی کامل ایموجی‌ها و متون
 # ---------------------------------------------------------
 def remove_emojis(text):
     if not text:
@@ -162,8 +162,6 @@ def clean_fallback(text):
     return "\n\n".join(lines) + f"\n\n#خبر\n\n{sig}"
 
 def rewrite_with_ai(raw_text):
-    global recent_news_summaries
-
     if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
         return None
 
@@ -200,11 +198,11 @@ def rewrite_with_ai(raw_text):
     return clean_fallback(raw_text)
 
 # ---------------------------------------------------------
-# تابع اصلی و بدون خطا برای ارسال پست به کانال
+# ارسال ایمن و سریع پیام به تلگرام
 # ---------------------------------------------------------
 def send_telegram_post(text, source_url=None):
     if not BOT_TOKEN:
-        return False, "BOT_TOKEN یافت نشد."
+        return False
 
     keyboard = []
     links_row = []
@@ -223,22 +221,18 @@ def send_telegram_post(text, source_url=None):
     }
     
     try:
-        res = http_session.post(send_url, json=payload, timeout=6)
+        res = http_session.post(send_url, json=payload, timeout=5)
         if res.status_code == 200:
-            return True, "ارسال موفق بود."
+            return True
             
-        # تلاش مجدد بدون فرمت HTML
+        # تلاش مجدد بدون HTML جهت جلوگیری از خطای کاراکترها
         plain_text = text.replace("<b>", "").replace("</b>", "")
         payload["text"] = plain_text
         payload.pop("parse_mode", None)
-        res_retry = http_session.post(send_url, json=payload, timeout=6)
-        
-        if res_retry.status_code == 200:
-            return True, "ارسال موفق (متن ساده)."
-        else:
-            return False, f"خطای تلگرام: {res_retry.text}"
-    except Exception as e:
-        return False, f"خطای شبکه: {e}"
+        res_retry = http_session.post(send_url, json=payload, timeout=5)
+        return res_retry.status_code == 200
+    except Exception:
+        return False
 
 # ---------------------------------------------------------
 # کیبوردهای پنل
@@ -324,7 +318,7 @@ def get_cancel_keyboard():
 # ---------------------------------------------------------
 def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete
-    print("Fast panel listener started...")
+    print("Bot fast listener is online...")
     
     while True:
         try:
@@ -580,16 +574,10 @@ def fast_panel_listener():
                             user_states[chat_id] = None
                             sig = config_db.get("channel_signature", f"شناسه: @{MY_CHANNEL_USERNAME}")
                             clean_text = sanitize_all_links(text)
-                            
-                            # فرمت باثبات پیام دستی
                             post_text = f"<b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}"
                             
-                            ok, details = send_telegram_post(post_text)
-                            if ok:
-                                reply = "پست با موفقیت به کانال ارسال شد."
-                            else:
-                                reply = f"علت خطای عدم ارسال:\n{details}"
-                                
+                            success = send_telegram_post(post_text)
+                            reply = "پست با موفقیت در کانال منتشر شد." if success else "خطا در ارسال پست."
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -630,8 +618,8 @@ def process_single_channel(channel):
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
-                        ok, _ = send_telegram_post(final_text, source_post_url)
-                        if ok:
+                        success = send_telegram_post(final_text, source_post_url)
+                        if success:
                             seen_post_ids.add(post_id)
                             save_seen_post(post_id)
                     else:
@@ -652,7 +640,7 @@ def fetch_news_loop():
                 time.sleep(3)
 
 # ---------------------------------------------------------
-# اجرا
+# اجرای پروژه
 # ---------------------------------------------------------
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
