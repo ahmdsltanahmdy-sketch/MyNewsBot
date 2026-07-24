@@ -23,7 +23,7 @@ def health():
 
 INITIAL_ADMIN_ID = 97241647
 
-# لیست جدید کانال‌های مبدا (تا 25 کانال)
+# لیست کانال‌های مبدا (تا 25 کانال)
 DEFAULT_CHANNELS = [
     "iribnews", "sepahnewsir403", "IRNA_1313", "JahanTasnim", 
     "ClashReport", "TasnimNews", "FarsNewsInt", "mizanplus",
@@ -49,7 +49,7 @@ config_db = {
     },
     "categories_active": True,
     
-    # تنظیمات ترجمه (با اضافه شدن عبری و حذف جمله ترجمه ماشینی)
+    # تنظیمات ترجمه
     "target_language": "fa", 
     "allowed_languages": {"en": True, "ar": True, "he": True, "fr": True, "tr": True}, 
     "translation_tag_active": True, 
@@ -108,7 +108,6 @@ def translate_text(text):
     if not text:
         return text, None
     
-    # شمارش دقیق کاراکترها برای تفکیک زبان فارسی از زبان‌های خارجی
     persian_chars = len(re.findall(r'[\u0600-\u06FF]', text))
     eng_chars = len(re.findall(r'[a-zA-Z]', text))
     hebrew_chars = len(re.findall(r'[\u0590-\u05FF]', text))
@@ -116,7 +115,6 @@ def translate_text(text):
     
     source_lang = None
     
-    # اگر متن بیشتر کاراکتر فارسی داشت یا کلمات فارسی غالب بودند، اصلاً ترجمه نکن
     if persian_chars > 20 and persian_chars >= eng_chars:
         return text, None
 
@@ -244,7 +242,6 @@ def clean_fallback(text, translated_from=None):
     sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
     cat_tags = detect_category_and_tags(text)
     
-    # فقط ایموجی زبان بدون جمله اضافه
     trans_tag = ""
     if translated_from and config_db.get("translation_tag_active", True):
         lang_emojis = {"en": "🇬🇧", "ar": "🇸🇦", "he": "🇮🇱", "fr": "🇫🇷", "tr": "🇹🇷"}
@@ -552,7 +549,7 @@ def get_blacklist_keyboard():
     bl = config_db.get("blacklist", [])
     for idx, word in enumerate(bl):
         keyboard.append([{"text": f"❌ حذف «{word}»", "callback_data": f"del_bl_idx_{idx}"}])
-    keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
+    keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
 
 def get_interval_keyboard():
@@ -937,7 +934,7 @@ def fast_panel_listener():
                             if 0 <= idx < len(bl):
                                 bl.pop(idx)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
+                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_force_post_prompt":
