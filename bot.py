@@ -262,7 +262,7 @@ def rewrite_with_ai(raw_text):
         f"متن خبر:\n{raw_text}"
     )
 
-    for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash', 'gemini-1.5-flash']:
+    for model_name in ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-2.0-flash']:
         try:
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
@@ -600,7 +600,7 @@ def fast_panel_listener():
 
                         elif action == "test_ai_health":
                             test_status = "❌ خطا در اتصال به Gemini"
-                            for mdl in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash', 'gemini-1.5-flash']:
+                            for mdl in ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-2.0-flash']:
                                 try:
                                     ai_model = genai.GenerativeModel(mdl)
                                     resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
