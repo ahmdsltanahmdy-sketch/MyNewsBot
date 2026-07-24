@@ -3,6 +3,7 @@ import re
 import os
 import requests
 import threading
+import queue
 import difflib
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -32,27 +33,35 @@ DEFAULT_TARGETS = [
     {"chat_id": "-1002038404831", "username": "Rallyir"}
 ]
 
-# ذخیره تنظیمات در حافظه رم برای جلوگیری از خطای دیسک در رندر
+# ذخیره تنظیمات پیشرفته در حافظه رم
 config_db = {
     "bot_active": True,
     "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
     "gemini_api_key": (os.environ.get("GEMINI_API_KEY") or "").strip(),
     "channel_signature": "🆔 @Rallyir",
     "blacklist": ["تبلیغات", "تخفیف ویژه"],
-    "golden_keywords": [],
-    "golden_keywords_active": False,
+    "categories": {
+        "سیاسی": ["دولت", "مجلس", "رهبر", "وزیر", "انتخابات"],
+        "ورزشی": ["فوتبال", "استقلال", "پرسپولیس", "تیم ملی", "لیگ"],
+        "فناوری": ["هوش مصنوعی", "گوشی", "اینترنت", "تکنولوژی", "آپدیت"]
+    },
+    "categories_active": True,
     "fuzzy_check_active": True,
     "fuzzy_threshold": 70,
     "quiet_hours_active": False,
     "quiet_start_hour": 0,
     "quiet_end_hour": 6,
     "check_interval": 10,
+    # قابلیت صف‌بندی و انتشار زمان‌بندی‌شده (از ۵ ثانیه به بالا)
+    "queue_schedule_active": True,
+    "queue_interval": 5,
     "admin_ids": [INITIAL_ADMIN_ID]
 }
 
 target_channels = DEFAULT_CHANNELS.copy()
 target_destinations = DEFAULT_TARGETS.copy()
 seen_post_ids = set()
+news_queue = queue.Queue()
 
 BOT_TOKEN = config_db.get("bot_token", "")
 GEMINI_API_KEY = config_db.get("gemini_api_key", "")
@@ -72,17 +81,9 @@ user_states = {}
 selected_channels_for_bulk_delete = {}
 recent_posts_history = []
 last_processed_news_log = []
+channel_health_status = {}
 db_lock = threading.Lock()
 last_update_id = 0
-
-def save_config(cfg):
-    pass # در رندر نیازی به ذخیره روی فایل نیست
-
-def save_target_channels(targets):
-    pass
-
-def save_channels(channels):
-    pass
 
 def is_admin(user_id):
     admins = config_db.get("admin_ids", [])
@@ -136,13 +137,21 @@ def check_blacklist(text):
             return True
     return False
 
-def check_golden_keywords(text):
-    if not config_db.get("golden_keywords_active", False):
-        return True
-    keywords = config_db.get("golden_keywords", [])
-    if not keywords:
-        return True
-    return any(word.lower() in text.lower() for word in keywords if word)
+def detect_category_and_tags(text):
+    if not config_db.get("categories_active", True):
+        return "#خبر"
+    
+    tags = []
+    categories = config_db.get("categories", {})
+    for cat_name, keywords in categories.items():
+        for kw in keywords:
+            if kw and kw.lower() in text.lower():
+                tags.append(f"#{cat_name}")
+                break
+    
+    if not tags:
+        tags.append("#خبر_فوری")
+    return " ".join(tags[:3])
 
 def is_fuzzy_duplicate(new_text):
     if not config_db.get("fuzzy_check_active", True):
@@ -175,14 +184,12 @@ def clean_fallback(text):
     lines[0] = f"📌 <b>{lines[0]}</b>"
     default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
     sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
+    cat_tags = detect_category_and_tags(text)
     body = "\n\n".join(lines)
-    return clean_extra_spaces(f"{body}\n\n#خبر\n\n{sig}")
+    return clean_extra_spaces(f"{body}\n\n{cat_tags}\n\n{sig}")
 
 def rewrite_with_ai(raw_text):
     if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
-        return None
-
-    if not check_golden_keywords(raw_text):
         return None
 
     if is_fuzzy_duplicate(raw_text):
@@ -197,13 +204,13 @@ def rewrite_with_ai(raw_text):
     except Exception:
         pass
 
+    cat_tags = detect_category_and_tags(raw_text)
     prompt = (
         "تو یک ویرایشگر خبر حرفه‌ای هستی. متن زیر را بازنویسی کن.\n\n"
         "قوانین:\n"
         "۱. تمام لینک‌ها، هایپرلینک‌ها و آیدی‌ها (@) را حتماً حذف کن.\n"
         "۲. خط اول را یک تیتر دقیق بگذار.\n"
-        "۳. از هیچ ایموجی در متن خبر استفاده نکن.\n"
-        "۴. در انتها ۲ تا ۴ هشتگ خبری تخصصی بگذار.\n\n"
+        "۳. از هیچ ایموجی در متن خبر استفاده نکن.\n\n"
         f"متن خبر:\n{raw_text}"
     )
 
@@ -225,7 +232,7 @@ def rewrite_with_ai(raw_text):
             default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
             sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
             
-            clean_res = clean_extra_spaces(f"{formatted_body}\n\n{sig}")
+            clean_res = clean_extra_spaces(f"{formatted_body}\n\n{cat_tags}\n\n{sig}")
             recent_posts_history.append(sanitize_all_links(raw_text))
             if len(recent_posts_history) > 30:
                 recent_posts_history.pop(0)
@@ -278,18 +285,53 @@ def send_telegram_post_to_all(text, source_url=None):
             pass
     return success_any
 
+# پردازش صف انتشار زمان‌بندی‌شده
+def queue_worker():
+    print("⏳ Queue worker thread is online...")
+    while True:
+        try:
+            if not config_db.get("bot_active", True):
+                time.sleep(2)
+                continue
+            
+            is_scheduled = config_db.get("queue_schedule_active", True)
+            interval = max(5, config_db.get("queue_interval", 5))
+
+            if not news_queue.empty():
+                item = news_queue.get()
+                final_text = item["text"]
+                source_url = item["url"]
+                
+                send_telegram_post_to_all(final_text, source_url)
+                news_queue.task_done()
+                
+                if is_scheduled:
+                    time.sleep(interval)
+            else:
+                time.sleep(1)
+        except Exception:
+            time.sleep(1)
+
 def get_main_panel_keyboard():
     status_icon = "🟢" if config_db.get("bot_active", True) else "🔴"
     interval = config_db.get("check_interval", 10)
     
-    golden_st = "🟢" if config_db.get("golden_keywords_active", False) else "🔴"
-    fuzzy_st = "🟢" if config_db.get("fuzzy_check_active", True) else "🔴"
-    quiet_st = "🟢" if config_db.get("quiet_hours_active", False) else "🔴"
+    queue_st = "🟢" if config_db.get("queue_schedule_active", True) else "🔴"
+    queue_sec = config_db.get("queue_interval", 5)
+    cat_st = "🟢" if config_db.get("categories_active", True) else "🔴"
 
     return {
         "inline_keyboard": [
             [
                 {"text": f"{status_icon} روشن / خاموش ربات", "callback_data": "toggle_bot_status"}
+            ],
+            [
+                {"text": f"{queue_st} زمان‌بندی صف ({queue_sec}s)", "callback_data": "panel_queue_menu"},
+                {"text": f"{cat_st} دسته‌بندی موضوعی", "callback_data": "panel_categories_menu"}
+            ],
+            [
+                {"text": "📡 مانیتورینگ سلامت مبدا", "callback_data": "panel_health_monitor"},
+                {"text": "🎯 مقصدهای ارسال", "callback_data": "panel_targets_menu"}
             ],
             [
                 {"text": "📋 لیست مبدا", "callback_data": "panel_list"},
@@ -300,20 +342,12 @@ def get_main_panel_keyboard():
                 {"text": "☑️ حذف گروهی مبدا", "callback_data": "panel_bulk_delete_menu"}
             ],
             [
-                {"text": "🎯 مدیریت مقصدهای ارسال", "callback_data": "panel_targets_menu"},
-                {"text": "🔑 تنظیم توکن و API", "callback_data": "panel_tokens_menu"}
+                {"text": "🔑 توکن و API", "callback_data": "panel_tokens_menu"},
+                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"}
             ],
             [
-                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"},
-                {"text": f"⏱ فاصله: {interval}s", "callback_data": "panel_interval_menu"}
-            ],
-            [
-                {"text": "🚫 کلمات سیاه", "callback_data": "panel_blacklist_menu"},
-                {"text": f"{golden_st} کلیدواژه طلایی", "callback_data": "panel_golden_menu"}
-            ],
-            [
-                {"text": f"{fuzzy_st} سیستم ضدتکرار", "callback_data": "panel_fuzzy_menu"},
-                {"text": f"{quiet_st} ساعت خاموشی", "callback_data": "panel_quiet_menu"}
+                {"text": f"⏱ فاصله بررسی: {interval}s", "callback_data": "panel_interval_menu"},
+                {"text": "🚫 کلمات سیاه", "callback_data": "panel_blacklist_menu"}
             ],
             [
                 {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"},
@@ -324,10 +358,7 @@ def get_main_panel_keyboard():
                 {"text": "👑 ادمین‌ها", "callback_data": "panel_admins_menu"}
             ],
             [
-                {"text": "💾 ریست دیتابیس", "callback_data": "panel_backup_reset_menu"},
-                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
-            ],
-            [
+                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"},
                 {"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}
             ]
         ]
@@ -337,6 +368,33 @@ def get_cancel_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "🚫 انصراف و بازگشت به پنل", "callback_data": "cancel_action"}]
+        ]
+    }
+
+def get_queue_keyboard():
+    q_st = "🔴 غیرفعال" if not config_db.get("queue_schedule_active", True) else "🟢 فعال"
+    q_sec = config_db.get("queue_interval", 5)
+    return {
+        "inline_keyboard": [
+            [{"text": f"وضعیت زمان‌بندی: {q_st}", "callback_data": "toggle_queue_status"}],
+            [
+                {"text": "5 ثانیه", "callback_data": "set_q_5"},
+                {"text": "10 ثانیه", "callback_data": "set_q_10"},
+                {"text": f"• {q_sec}s •", "callback_data": "noop"},
+                {"text": "30 ثانیه", "callback_data": "set_q_30"},
+                {"text": "60 ثانیه", "callback_data": "set_q_60"}
+            ],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
+        ]
+    }
+
+def get_categories_keyboard():
+    cat_st = "🔴 غیرفعال" if not config_db.get("categories_active", True) else "🟢 فعال"
+    return {
+        "inline_keyboard": [
+            [{"text": f"وضعیت دسته‌بندی هوشمند: {cat_st}", "callback_data": "toggle_cat_status"}],
+            [{"text": "📋 مشاهده دسته‌ها و کلمات", "callback_data": "show_categories_list"}],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
 
@@ -371,42 +429,6 @@ def get_fuzzy_keyboard():
                 {"text": "80%", "callback_data": "set_fuzzy_80"},
                 {"text": "90%", "callback_data": "set_fuzzy_90"}
             ],
-            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
-        ]
-    }
-
-def get_quiet_keyboard():
-    quiet_st = "🔴 غیرفعال" if not config_db.get("quiet_hours_active", False) else "🟢 فعال"
-    sh = config_db.get("quiet_start_hour", 0)
-    eh = config_db.get("quiet_end_hour", 6)
-    return {
-        "inline_keyboard": [
-            [{"text": f"وضعیت خاموشی: {quiet_st}", "callback_data": "toggle_quiet_status"}],
-            [
-                {"text": f"⏰ شروع: {sh:02d}:00", "callback_data": "set_quiet_start_prompt"},
-                {"text": f"⏰ پایان: {eh:02d}:00", "callback_data": "set_quiet_end_prompt"}
-            ],
-            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
-        ]
-    }
-
-def get_hour_picker_keyboard(action_prefix):
-    keyboard = []
-    row = []
-    for h in range(24):
-        row.append({"text": f"{h:02d}:00", "callback_data": f"{action_prefix}_{h}"})
-        if len(row) == 4:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    keyboard.append([{"text": "🚫 انصراف", "callback_data": "panel_quiet_menu"}])
-    return {"inline_keyboard": keyboard}
-
-def get_backup_reset_keyboard():
-    return {
-        "inline_keyboard": [
-            [{"text": "🧹 ریست حافظه اخبار دیده‌شده", "callback_data": "reset_db_confirm_prompt"}],
             [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
@@ -446,18 +468,6 @@ def get_blacklist_keyboard():
     bl = config_db.get("blacklist", [])
     for idx, word in enumerate(bl):
         keyboard.append([{"text": f"❌ حذف «{word}»", "callback_data": f"del_bl_idx_{idx}"}])
-    keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
-    return {"inline_keyboard": keyboard}
-
-def get_golden_keyboard():
-    keyboard = []
-    st = "🔴 غیرفعال (کلیک برای فعال‌سازی)" if not config_db.get("golden_keywords_active", False) else "🟢 فعال (کلیک برای غیرفعال‌سازی)"
-    keyboard.append([{"text": f"وضعیت فیلتر: {st}", "callback_data": "toggle_golden_status"}])
-    keyboard.append([{"text": "➕ افزودن کلمه طلایی", "callback_data": "add_golden_word_prompt"}])
-    
-    gk = config_db.get("golden_keywords", [])
-    for idx, word in enumerate(gk):
-        keyboard.append([{"text": f"❌ حذف «{word}»", "callback_data": f"del_gk_idx_{idx}"}])
     keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
 
@@ -522,7 +532,63 @@ def fast_panel_listener():
                         except Exception:
                             pass
 
-                        if action == "panel_targets_menu":
+                        if action == "panel_queue_menu":
+                            q_st = "🟢 فعال" if config_db.get("queue_schedule_active", True) else "🔴 غیرفعال"
+                            q_sec = config_db.get("queue_interval", 5)
+                            reply = f"⏳ **سیستم صف‌بندی و انتشار زمان‌بندی‌شده**\n\n---" + f"\nوضعیت: {q_st}\nفاصله بین ارسال‌ها: **{q_sec} ثانیه**"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_queue_keyboard()
+                            }, timeout=3)
+
+                        elif action == "toggle_queue_status":
+                            config_db["queue_schedule_active"] = not config_db.get("queue_schedule_active", True)
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ وضعیت صف‌بندی به‌روز شد.", "reply_markup": get_queue_keyboard()
+                            }, timeout=3)
+
+                        elif action.startswith("set_q_"):
+                            sec = int(action.replace("set_q_", ""))
+                            config_db["queue_interval"] = max(5, sec)
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": f"✅ فاصله انتشار روی {sec} ثانیه تنظیم شد.", "reply_markup": get_queue_keyboard()
+                            }, timeout=3)
+
+                        elif action == "panel_categories_menu":
+                            cat_st = "🟢 فعال" if config_db.get("categories_active", True) else "🔴 غیرفعال"
+                            reply = f"🎯 **مدیریت دسته‌بندی موضوعی هوشمند**\n\n---" + f"\nوضعیت: {cat_st}\nربات به طور خودکار اخبار را دسته‌بندی و هشتگ‌گذاری می‌کند."
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_categories_keyboard()
+                            }, timeout=3)
+
+                        elif action == "toggle_cat_status":
+                            config_db["categories_active"] = not config_db.get("categories_active", True)
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ وضعیت دسته‌بندی هوشمند به‌روز شد.", "reply_markup": get_categories_keyboard()
+                            }, timeout=3)
+
+                        elif action == "show_categories_list":
+                            cats = config_db.get("categories", {})
+                            cat_text = ""
+                            for c_name, kws in cats.items():
+                                cat_text += f"• **{c_name}**: `{', '.join(kws)}`\n"
+                            reply = f"📋 **لیست دسته‌ها و کلمات کلیدی**\n\n---" + f"\n{cat_text}"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_categories_keyboard()
+                            }, timeout=3)
+
+                        elif action == "panel_health_monitor":
+                            monitor_text = ""
+                            for ch in target_channels:
+                                st = channel_health_status.get(ch, "🟢 سالم و آنلاین")
+                                monitor_text += f"• `{ch}`: {st}\n"
+                            if not monitor_text:
+                                monitor_text = "هنوز بررسی انجام نشده است."
+                            reply = f"📡 **مانیتورینگ هوشمند کانال‌های مبدا**\n\n---" + f"\n{monitor_text}"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "panel_targets_menu":
                             targets_info = "\n".join([f"• `{d['chat_id']}` (@{d['username']})" for d in target_destinations])
                             reply = "🎯 **مدیریت کانال‌های مقصد (حداکثر ۵تا)**\n\n---" + f"\nکانال‌های فعلی:\n{targets_info}"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
@@ -632,80 +698,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
-                        elif action == "panel_fuzzy_menu":
-                            reply = f"🔍 **تنظیمات عدم تکرار هوشمند**\n\n---" + f"\nحساسیت فعلی: **{config_db.get('fuzzy_threshold', 70)}%**"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_fuzzy_keyboard()
-                            }, timeout=3)
-
-                        elif action == "toggle_fuzzy_status":
-                            config_db["fuzzy_check_active"] = not config_db.get("fuzzy_check_active", True)
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ وضعیت سیستم ضدتکرار به‌روز شد.", "reply_markup": get_fuzzy_keyboard()
-                            }, timeout=3)
-
-                        elif action.startswith("set_fuzzy_"):
-                            val = int(action.replace("set_fuzzy_", ""))
-                            config_db["fuzzy_threshold"] = val
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": f"✅ حساسیت روی {val}% تنظیم شد.", "reply_markup": get_fuzzy_keyboard()
-                            }, timeout=3)
-
-                        elif action == "panel_quiet_menu":
-                            sh = config_db.get("quiet_start_hour", 0)
-                            eh = config_db.get("quiet_end_hour", 6)
-                            reply = f"🌙 **تنظیمات خاموشی شبانه**\n\n---" + f"\nبازه فعلی: از ساعت **{sh:02d}:00** تا **{eh:02d}:00**"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
-                            }, timeout=3)
-
-                        elif action == "toggle_quiet_status":
-                            config_db["quiet_hours_active"] = not config_db.get("quiet_hours_active", False)
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ وضعیت خاموشی شبانه به‌روز شد.", "reply_markup": get_quiet_keyboard()
-                            }, timeout=3)
-
-                        elif action == "set_quiet_start_prompt":
-                            reply = "⏰ **ساعت شروع خاموشی**\n\n---" + "\nساعت مورد نظر را انتخاب کنید:"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_hour_picker_keyboard("qstart")
-                            }, timeout=3)
-
-                        elif action.startswith("qstart_"):
-                            h = int(action.replace("qstart_", ""))
-                            config_db["quiet_start_hour"] = h
-                            reply = f"✅ ساعت شروع روی **{h:02d}:00** تنظیم شد."
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
-                            }, timeout=3)
-
-                        elif action == "set_quiet_end_prompt":
-                            reply = "⏰ **ساعت پایان خاموشی**\n\n---" + "\nساعت مورد نظر را انتخاب کنید:"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_hour_picker_keyboard("qend")
-                            }, timeout=3)
-
-                        elif action.startswith("qend_"):
-                            h = int(action.replace("qend_", ""))
-                            config_db["quiet_end_hour"] = h
-                            reply = f"✅ ساعت پایان روی **{h:02d}:00** تنظیم شد."
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
-                            }, timeout=3)
-
-                        elif action == "panel_backup_reset_menu":
-                            reply = "💾 **مدیریت دیتابیس و پشتیبان‌گیری**\n\n---" + "\nگزینه مورد نظر را انتخاب کنید:"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_backup_reset_keyboard()
-                            }, timeout=3)
-
-                        elif action == "reset_db_confirm_prompt":
-                            clear_seen_posts()
-                            reply = "🧹 **پاکسازی حافظه اخبار**\n\n---" + "\nحافظه اخبار دیده‌شده خالی شد."
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
-                            }, timeout=3)
-
                         elif action == "panel_admins_menu":
                             admins = config_db.get("admin_ids", [])
                             adm_list = "\n".join([f"• `{a}`" for a in admins])
@@ -729,37 +721,6 @@ def fast_panel_listener():
                                 reply = "❌ ادمین مورد نظر حذف شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
-                            }, timeout=3)
-
-                        elif action == "panel_golden_menu":
-                            gk = config_db.get("golden_keywords", [])
-                            gk_text = "\n".join([f"• `{w}`" for w in gk]) if gk else "خالی"
-                            st = "🟢 فعال" if config_db.get("golden_keywords_active", False) else "🔴 غیرفعال"
-                            reply = f"🎯 **کلیدواژه‌های طلایی**\nوضعیت: {st}\n\n---" + f"\nکلمات فعلی:\n{gk_text}"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
-                            }, timeout=3)
-
-                        elif action == "toggle_golden_status":
-                            config_db["golden_keywords_active"] = not config_db.get("golden_keywords_active", False)
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ وضعیت فیلتر کلیدواژه‌های طلایی تغییر کرد.", "reply_markup": get_golden_keyboard()
-                            }, timeout=3)
-
-                        elif action == "add_golden_word_prompt":
-                            user_states[chat_id] = "WAITING_FOR_GOLDEN_WORD"
-                            reply = "🎯 **افزودن کلمه طلایی**\n\n---" + "\nکلمه یا عبارت مورد نظر را بفرستید:"
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
-                            }, timeout=3)
-
-                        elif action.startswith("del_gk_idx_"):
-                            idx = int(action.replace("del_gk_idx_", ""))
-                            gk = config_db.get("golden_keywords", [])
-                            if 0 <= idx < len(gk):
-                                gk.pop(idx)
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ کلمه طلایی حذف شد.", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_list":
@@ -1010,8 +971,8 @@ def fast_panel_listener():
                             clean_text = sanitize_all_links(text)
                             post_text = clean_extra_spaces(f"📌 <b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}")
                             
-                            success = send_telegram_post_to_all(post_text)
-                            reply = "🚀 **پست به تمامی کانال‌های مقصد ارسال شد.**" if success else "❌ خطا."
+                            news_queue.put({"text": post_text, "url": None})
+                            reply = "🚀 **پست به صف انتشار اضافه شد و به زودی ارسال خواهد شد.**"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -1026,7 +987,7 @@ def fast_panel_listener():
             time.sleep(1)
 
 def process_single_channel(channel):
-    global last_processed_news_log
+    global last_processed_news_log, channel_health_status
     if not config_db.get("bot_active", True) or channel not in target_channels:
         return
 
@@ -1035,11 +996,16 @@ def process_single_channel(channel):
 
     url = f"https://t.me/s/{channel}"
     try:
-        res = http_session.get(url, timeout=4)
+        res = http_session.get(url, timeout=5)
+        if res.status_code != 200:
+            channel_health_status[channel] = "🔴 خطا (در دسترس نیست یا فیلتر شده)"
+            return
+        
         soup = BeautifulSoup(res.text, "html.parser")
         posts = soup.find_all("div", class_="tgme_widget_message")
         
         if posts:
+            channel_health_status[channel] = "🟢 سالم و آنلاین"
             last_post = posts[-1]
             post_id = last_post.get("data-post")
             
@@ -1052,17 +1018,18 @@ def process_single_channel(channel):
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
-                        success = send_telegram_post_to_all(final_text, source_post_url)
-                        if success:
-                            seen_post_ids.add(post_id)
-                            first_line = final_text.splitlines()[0].replace("<b>", "").replace("</b>", "").replace("📌 ", "")
-                            last_processed_news_log.append(f"[{channel}] {first_line}")
-                            if len(last_processed_news_log) > 5:
-                                last_processed_news_log.pop(0)
+                        seen_post_ids.add(post_id)
+                        news_queue.put({"text": final_text, "url": source_post_url})
+                        first_line = final_text.splitlines()[0].replace("<b>", "").replace("</b>", "").replace("📌 ", "")
+                        last_processed_news_log.append(f"[{channel}] {first_line}")
+                        if len(last_processed_news_log) > 5:
+                            last_processed_news_log.pop(0)
                 else:
                     seen_post_ids.add(post_id)
+        else:
+            channel_health_status[channel] = "🟡 بدون پست یا ساختار جدید"
     except Exception:
-        pass
+        channel_health_status[channel] = "🔴 خطای اتصال به شبکه"
 
 def fetch_news_loop():
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -1099,6 +1066,9 @@ if __name__ == "__main__":
 
     news_thread = threading.Thread(target=fetch_news_loop, daemon=True)
     news_thread.start()
+
+    queue_thread = threading.Thread(target=queue_worker, daemon=True)
+    queue_thread.start()
 
     ping_thread = threading.Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
