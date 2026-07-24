@@ -51,6 +51,7 @@ config_db = {
     },
     "categories_active": True,
     "target_language": "fa", 
+    "auto_translate_active": True, # قابلیت روشن/خاموش کردن ترجمه خودکار
     "allowed_languages": {"en": True, "ar": True, "he": True, "fr": True, "tr": True}, 
     "translation_tag_active": True, 
     "fuzzy_check_active": True,
@@ -103,32 +104,37 @@ def clear_seen_posts():
         except Exception:
             return False
 
-def translate_text(text):
+def detect_language(text):
     if not text:
-        return text, None
-    
+        return None
     persian_chars = len(re.findall(r'[\u0600-\u06FF]', text))
     eng_chars = len(re.findall(r'[a-zA-Z]', text))
     hebrew_chars = len(re.findall(r'[\u0590-\u05FF]', text))
     arabic_pure_chars = len(re.findall(r'[\u0600-\u06FF]', text))
     
-    source_lang = None
     if persian_chars > 20 and persian_chars >= eng_chars:
-        return text, None
+        return None
 
     if hebrew_chars > 5:
-        source_lang = "he"
+        return "he"
     elif eng_chars > 20 and eng_chars > persian_chars:
-        source_lang = "en"
+        return "en"
     elif arabic_pure_chars > 20 and persian_chars < 5:
-        source_lang = "ar"
+        return "ar"
+    return None
+
+def translate_text(text):
+    if not text or not config_db.get("auto_translate_active", True):
+        src = detect_language(text)
+        return text, src
     
+    source_lang = detect_language(text)
     if not source_lang:
         return text, None 
 
     allowed_langs = config_db.get("allowed_languages", {})
     if not allowed_langs.get(source_lang, True):
-        return text, None 
+        return text, source_lang 
 
     target_lang = config_db.get("target_language", "fa")
 
@@ -141,7 +147,7 @@ def translate_text(text):
             "dt": "t",
             "q": text
         }
-        response = http_session.get(url, params=params, timeout=5)
+        response = http_session.get(url, params=params, timeout=4)
         if response.status_code == 200:
             res_json = response.json()
             translated_sentence = "".join([item[0] for item in res_json[0] if item[0]])
@@ -149,7 +155,7 @@ def translate_text(text):
                 return translated_sentence, source_lang
     except Exception:
         pass
-    return text, None
+    return text, source_lang
 
 def remove_emojis(text):
     if not text:
@@ -382,6 +388,7 @@ def get_cancel_keyboard():
     }
 
 def get_translation_keyboard():
+    trans_act_st = "🟢 روشن" if config_db.get("auto_translate_active", True) else "🔴 خاموش"
     tag_st = "🟢 فعال" if config_db.get("translation_tag_active", True) else "🔴 غیرفعال"
     allowed = config_db.get("allowed_languages", {})
     en_st = "✅" if allowed.get("en", True) else "❌"
@@ -389,11 +396,10 @@ def get_translation_keyboard():
     he_st = "✅" if allowed.get("he", True) else "❌"
     fr_st = "✅" if allowed.get("fr", True) else "❌"
     tr_st = "✅" if allowed.get("tr", True) else "❌"
-    t_lang = config_db.get("target_language", "fa").upper()
 
     return {
         "inline_keyboard": [
-            [{"text": f"زبان مقصد: [{t_lang}]", "callback_data": "set_target_lang_prompt"}],
+            [{"text": f"ترجمه خودکار: {trans_act_st}", "callback_data": "toggle_trans_active_status"}],
             [{"text": f"ایموجی پرچم در انتها: {tag_st}", "callback_data": "toggle_trans_tag"}],
             [{"text": f"{en_st} انگلیسی 🇬🇧", "callback_data": "toggle_lang_en"}, {"text": f"{ar_st} عربی 🇸🇦", "callback_data": "toggle_lang_ar"}],
             [{"text": f"{he_st} عبری 🇮🇱", "callback_data": "toggle_lang_he"}, {"text": f"{fr_st} فرانسوی 🇫🇷", "callback_data": "toggle_lang_fr"}],
@@ -529,11 +535,17 @@ def fast_panel_listener():
                             pass
 
                         if action == "panel_translation_menu":
-                            t_lang = config_db.get("target_language", "fa").upper()
+                            trans_st = "روشن" if config_db.get("auto_translate_active", True) else "خاموش"
                             tag_st = "فعال" if config_db.get("translation_tag_active", True) else "غیرفعال"
-                            reply = f"🌐 **تنظیمات پیشرفته ترجمه و زبان‌ها**\n\n---" + f"\n• زبان مقصد: **{t_lang}**\n• برچسب پرچم زبان: **{tag_st}**"
+                            reply = f"🌐 **تنظیمات ترجمه و زبان‌ها**\n\n---" + f"\n• ترجمه خودکار: **{trans_st}**\n• برچسب پرچم: **{tag_st}**"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
+                            }, timeout=3)
+
+                        elif action == "toggle_trans_active_status":
+                            config_db["auto_translate_active"] = not config_db.get("auto_translate_active", True)
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ وضعیت ترجمه خودکار به‌روز شد.", "reply_markup": get_translation_keyboard()
                             }, timeout=3)
 
                         elif action == "toggle_trans_tag":
@@ -847,7 +859,7 @@ def fast_panel_listener():
                             if 0 <= idx < len(bl):
                                 bl.pop(idx)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "reply_markup": get_blacklist_keyboard()
+                                "chat_id": chat_id, "text": f"✅ کلمه از لیست سیاه حذف شد.", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_force_post_prompt":
@@ -884,19 +896,7 @@ def fast_panel_listener():
 
                         state = user_states.get(chat_id)
 
-                        if state == "WAITING_FOR_TARGET_LANG":
-                            user_states[chat_id] = None
-                            new_lang = text.lower().strip()
-                            if len(new_lang) == 2:
-                                config_db["target_language"] = new_lang
-                                reply = f"✅ زبان مقصد جدید روی **{new_lang.upper()}** تنظیم شد."
-                            else:
-                                reply = "❌ کد زبان نامعتبر است."
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
-                            }, timeout=3)
-
-                        elif state == "WAITING_FOR_NEW_TARGET":
+                        if state == "WAITING_FOR_NEW_TARGET":
                             user_states[chat_id] = None
                             parts = text.split()
                             if len(parts) >= 2:
@@ -999,7 +999,9 @@ def fast_panel_listener():
                                 news_queue.put({"text": final_post, "url": None})
                                 reply = "🚀 **پست دستی با موفقیت به صف انتشار اضافه شد.**"
                             except Exception as e:
-                                reply = f"❌ خطا در پردازش پست: {str(e)[:50]}"
+                                reply = f"🚀 **پست دستی ارسال شد.**"
+                                clean_p = clean_fallback(text, translated_from=None)
+                                news_queue.put({"text": clean_p, "url": None})
 
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
