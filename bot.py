@@ -56,12 +56,20 @@ def load_config():
         "admin_ids": [INITIAL_ADMIN_ID]
     }
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            try:
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                default_config.update(data)
-            except Exception:
-                pass
+                if isinstance(data, dict):
+                    default_config.update(data)
+        except Exception:
+            pass
+    else:
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(default_config, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
     if INITIAL_ADMIN_ID not in default_config.get("admin_ids", []):
         default_config.setdefault("admin_ids", []).append(INITIAL_ADMIN_ID)
     return default_config
@@ -97,13 +105,19 @@ db_lock = threading.Lock()
 
 def load_target_channels():
     if os.path.exists(TARGETS_FILE):
-        with open(TARGETS_FILE, "r", encoding="utf-8") as f:
-            try:
+        try:
+            with open(TARGETS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if data:
+                if isinstance(data, list) and data:
                     return data[:5]
-            except Exception:
-                pass
+        except Exception:
+            pass
+    else:
+        try:
+            with open(TARGETS_FILE, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_TARGETS, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     return DEFAULT_TARGETS.copy()
 
 def save_target_channels(targets):
@@ -121,8 +135,11 @@ def is_admin(user_id):
 
 def load_seen_posts():
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return set(line.strip() for line in f if line.strip())
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                return set(line.strip() for line in f if line.strip())
+        except Exception:
+            pass
     return set()
 
 def save_seen_post(post_id):
@@ -144,10 +161,20 @@ def clear_seen_posts():
 
 def load_channels():
     if os.path.exists(CHANNELS_FILE):
-        with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
-            channels = [line.strip() for line in f if line.strip()]
-            if channels:
-                return channels[:20]
+        try:
+            with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
+                channels = [line.strip() for line in f if line.strip()]
+                if channels:
+                    return channels[:20]
+        except Exception:
+            pass
+    else:
+        try:
+            with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
+                for ch in DEFAULT_CHANNELS:
+                    f.write(f"{ch}\n")
+        except Exception:
+            pass
     return DEFAULT_CHANNELS.copy()
 
 def save_channels(channels):
@@ -1201,7 +1228,7 @@ def fetch_news_loop():
 
 def self_ping_loop():
     time.sleep(15)
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     health_url = f"http://127.0.0.1:{port}/health"
     print("🌐 Auto self-ping mechanism started...")
     
@@ -1213,7 +1240,7 @@ def self_ping_loop():
         time.sleep(240)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     
     bot_thread = threading.Thread(target=fast_panel_listener, daemon=True)
     bot_thread.start()
