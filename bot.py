@@ -21,26 +21,12 @@ def home():
 def health():
     return "Healthy", 200
 
-BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
-GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-
-INITIAL_ADMIN_ID = 97241647
-
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"Gemini Init Warning: {e}")
-
-http_session = requests.Session()
-http_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-})
-
+CONFIG_FILE = "config.json"
 DB_FILE = "seen_posts.txt"
 CHANNELS_FILE = "channels.txt"
 TARGETS_FILE = "target_channels.json"
-CONFIG_FILE = "config.json"
+
+INITIAL_ADMIN_ID = 97241647
 
 DEFAULT_CHANNELS = [
     "Tasnimnews", "FarsNewsInt", "IRNA_1313", "ISNAFA", 
@@ -52,15 +38,11 @@ DEFAULT_TARGETS = [
     {"chat_id": "-1002038404831", "username": "Rallyir"}
 ]
 
-user_states = {}
-selected_channels_for_bulk_delete = {}
-recent_posts_history = []
-last_processed_news_log = []
-db_lock = threading.Lock()
-
 def load_config():
     default_config = {
         "bot_active": True,
+        "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
+        "gemini_api_key": (os.environ.get("GEMINI_API_KEY") or "").strip(),
         "channel_signature": "🆔 @Rallyir",
         "blacklist": ["تبلیغات", "تخفیف ویژه"],
         "golden_keywords": [],
@@ -93,13 +75,33 @@ def save_config(cfg):
 
 config_db = load_config()
 
+BOT_TOKEN = config_db.get("bot_token", "")
+GEMINI_API_KEY = config_db.get("gemini_api_key", "")
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"Gemini Init Warning: {e}")
+
+http_session = requests.Session()
+http_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+})
+
+user_states = {}
+selected_channels_for_bulk_delete = {}
+recent_posts_history = []
+last_processed_news_log = []
+db_lock = threading.Lock()
+
 def load_target_channels():
     if os.path.exists(TARGETS_FILE):
         with open(TARGETS_FILE, "r", encoding="utf-8") as f:
             try:
                 data = json.load(f)
                 if data:
-                    return data
+                    return data[:5]
             except Exception:
                 pass
     return DEFAULT_TARGETS.copy()
@@ -107,7 +109,7 @@ def load_target_channels():
 def save_target_channels(targets):
     try:
         with open(TARGETS_FILE, "w", encoding="utf-8") as f:
-            json.dump(targets, f, ensure_ascii=False, indent=2)
+            json.dump(targets[:5], f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Targets Save Error: {e}")
 
@@ -252,6 +254,15 @@ def rewrite_with_ai(raw_text):
     if is_fuzzy_duplicate(raw_text):
         return None
 
+    key = config_db.get("gemini_api_key", "").strip()
+    if not key:
+        return clean_fallback(raw_text)
+
+    try:
+        genai.configure(api_key=key)
+    except Exception:
+        pass
+
     prompt = (
         "تو یک ویرایشگر خبر حرفه‌ای هستی. متن زیر را بازنویسی کن.\n\n"
         "قوانین:\n"
@@ -262,7 +273,7 @@ def rewrite_with_ai(raw_text):
         f"متن خبر:\n{raw_text}"
     )
 
-    for model_name in ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-2.0-flash']:
+    for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash', 'gemini-1.5-flash']:
         try:
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
@@ -292,7 +303,8 @@ def rewrite_with_ai(raw_text):
     return clean_fallback(raw_text)
 
 def send_telegram_post_to_all(text, source_url=None):
-    if not BOT_TOKEN or not target_destinations:
+    token = config_db.get("bot_token", BOT_TOKEN).strip()
+    if not token or not target_destinations:
         return False
 
     success_any = False
@@ -307,7 +319,7 @@ def send_telegram_post_to_all(text, source_url=None):
         links_row.append({"text": "📢 عضویت در کانال", "url": f"https://t.me/{target_uname}"})
         keyboard.append(links_row)
         
-        send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        send_url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             "chat_id": target_id,
             "text": text,
@@ -352,34 +364,35 @@ def get_main_panel_keyboard():
                 {"text": "🗑 حذف تکی کانال", "callback_data": "panel_delete_menu"}
             ],
             [
-                {"text": "☑️ حذف دسته‌جمعی کانال‌ها", "callback_data": "panel_bulk_delete_menu"},
-                {"text": "🎯 مدیریت کانال‌های مقصد", "callback_data": "panel_targets_menu"}
+                {"text": "☑️ مدیریت و حذف دسته‌جمعی مبدا", "callback_data": "panel_bulk_delete_menu"},
+                {"text": "🎯 مدیریت مقصدهای ارسال (تا ۵تا)", "callback_data": "panel_targets_menu"}
             ],
             [
-                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"},
-                {"text": f"⏱ فاصله بررسی: {interval}s", "callback_data": "panel_interval_menu"}
+                {"text": "🔑 تنظیم توکن و API", "callback_data": "panel_tokens_menu"},
+                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"}
             ],
             [
-                {"text": "🚫 کلمات سیاه (فیلتر)", "callback_data": "panel_blacklist_menu"},
-                {"text": f"{golden_st} کلیدواژه‌های طلایی", "callback_data": "panel_golden_menu"}
+                {"text": f"⏱ فاصله بررسی: {interval}s", "callback_data": "panel_interval_menu"},
+                {"text": "🚫 کلمات سیاه (فیلتر)", "callback_data": "panel_blacklist_menu"}
             ],
             [
-                {"text": f"{fuzzy_st} تنظیمات عدم تکرار", "callback_data": "panel_fuzzy_menu"},
-                {"text": f"{quiet_st} ساعت خاموشی", "callback_data": "panel_quiet_menu"}
+                {"text": f"{golden_st} کلیدواژه‌های طلایی", "callback_data": "panel_golden_menu"},
+                {"text": f"{fuzzy_st} تنظیمات عدم تکرار", "callback_data": "panel_fuzzy_menu"}
             ],
             [
-                {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"},
-                {"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"}
+                {"text": f"{quiet_st} ساعت خاموشی", "callback_data": "panel_quiet_menu"},
+                {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"}
             ],
             [
-                {"text": "⚡️ پاکسازی کش", "callback_data": "clear_ram_cache"},
-                {"text": "👑 مدیریت ادمین‌ها", "callback_data": "panel_admins_menu"}
+                {"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"},
+                {"text": "⚡️ پاکسازی کش", "callback_data": "clear_ram_cache"}
             ],
             [
-                {"text": "💾 دیتابیس و ریست", "callback_data": "panel_backup_reset_menu"},
-                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
+                {"text": "👑 مدیریت ادمین‌ها", "callback_data": "panel_admins_menu"},
+                {"text": "💾 دیتابیس و ریست", "callback_data": "panel_backup_reset_menu"}
             ],
             [
+                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"},
                 {"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}
             ]
         ]
@@ -394,11 +407,21 @@ def get_cancel_keyboard():
 
 def get_targets_keyboard():
     keyboard = []
-    keyboard.append([{"text": "➕ افزودن کانال مقصد جدید", "callback_data": "add_target_prompt"}])
+    if len(target_destinations) < 5:
+        keyboard.append([{"text": "➕ افزودن کانال مقصد جدید (حداکثر ۵تا)", "callback_data": "add_target_prompt"}])
     for idx, dest in enumerate(target_destinations):
         keyboard.append([{"text": f"❌ حذف مقصد: @{dest['username']}", "callback_data": f"del_target_{idx}"}])
     keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
+
+def get_tokens_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "🤖 تغییر توکن ربات (Bot Token)", "callback_data": "set_bot_token_prompt"}],
+            [{"text": "💎 تغییر کلید جمنای (Gemini API Key)", "callback_data": "set_gemini_key_prompt"}],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
+        ]
+    }
 
 def get_fuzzy_keyboard():
     fuzzy_st = "🔴 غیرفعال" if not config_db.get("fuzzy_check_active", True) else "🟢 فعال"
@@ -453,6 +476,7 @@ def get_backup_reset_keyboard():
                 {"text": "📥 دانلود دیتابیس (اخبار)", "callback_data": "download_db_file"}
             ],
             [{"text": "🧹 ریست حافظه اخبار دیده‌شده", "callback_data": "reset_db_confirm_prompt"}],
+            [{"text": "🔄 بازگشت به تنظیمات کارخانه (Factory Reset)", "callback_data": "factory_reset_confirm_prompt"}],
             [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
@@ -528,18 +552,14 @@ def fast_panel_listener():
     global last_update_id, target_channels, user_states, config_db, selected_channels_for_bulk_delete, recent_posts_history, target_destinations, last_processed_news_log
     print("Bot fast listener is online...")
     
-    try:
-        http_session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=5)
-    except Exception:
-        pass
-
     while True:
         try:
-            if not BOT_TOKEN:
+            token = config_db.get("bot_token", "").strip()
+            if not token:
                 time.sleep(3)
                 continue
 
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+            url = f"https://api.telegram.org/bot{token}/getUpdates"
             params = {"offset": last_update_id + 1, "timeout": 5}
             
             res = http_session.get(url, params=params, timeout=8)
@@ -562,29 +582,35 @@ def fast_panel_listener():
 
                         if not is_admin(from_user_id):
                             try:
-                                http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": "⛔️ شما دسترسی ادمین ندارید.", "show_alert": True}, timeout=2)
+                                http_session.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": "⛔️ شما دسترسی ادمین ندارید.", "show_alert": True}, timeout=2)
                             except Exception:
                                 pass
                             continue
 
                         try:
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=2)
+                            http_session.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=2)
                         except Exception:
                             pass
 
                         if action == "panel_targets_menu":
                             targets_info = "\n".join([f"• `{d['chat_id']}` (@{d['username']})" for d in target_destinations])
-                            reply = f"🎯 **مدیریت کانال‌های مقصد**\n\nکانال‌های فعلی:\n{targets_info}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            reply = f"🎯 **مدیریت کانال‌های مقصد (حداکثر ۵تا)**\n\nکانال‌های فعلی:\n{targets_info}"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_targets_keyboard()
                             }, timeout=3)
 
                         elif action == "add_target_prompt":
-                            user_states[chat_id] = "WAITING_FOR_NEW_TARGET"
-                            reply = "🎯 **اطلاعات کانال مقصد جدید را به فرمت زیر بفرستید:**\n`آیدی_عددی یوزرنیم`\n\nمثال:\n`-100123456789 mynewchannel`"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
-                            }, timeout=3)
+                            if len(target_destinations) >= 5:
+                                reply = "⚠️ ظرفیت کانال‌های مقصد تکمیل است (حداکثر ۵ کانال)."
+                                http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                    "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_targets_keyboard()
+                                }, timeout=3)
+                            else:
+                                user_states[chat_id] = "WAITING_FOR_NEW_TARGET"
+                                reply = "🎯 **اطلاعات کانال مقصد جدید را به فرمت زیر بفرستید:**\n`آیدی_عددی یوزرنیم`\n\nمثال:\n`-100123456789 mynewchannel`"
+                                http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                    "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                                }, timeout=3)
 
                         elif action.startswith("del_target_"):
                             idx = int(action.replace("del_target_", ""))
@@ -594,14 +620,57 @@ def fast_panel_listener():
                                 reply = f"❌ کانال مقصد @{removed['username']} حذف شد."
                             else:
                                 reply = "⚠️ حداقل باید یک کانال مقصد وجود داشته باشد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_targets_keyboard()
+                            }, timeout=3)
+
+                        elif action == "panel_tokens_menu":
+                            cur_token = config_db.get("bot_token", "")
+                            cur_key = config_db.get("gemini_api_key", "")
+                            masked_token = cur_token[:6] + "..." if len(cur_token) > 6 else "تنظیم‌نشده"
+                            masked_key = cur_key[:6] + "..." if len(cur_key) > 6 else "تنظیم‌نشده"
+                            reply = f"🔑 **تنظیمات توکن و API کلیدها**\n\n• توکن فعلی ربات: `{masked_token}`\n• کلید جمنای: `{masked_key}`"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_tokens_keyboard()
+                            }, timeout=3)
+
+                        elif action == "set_bot_token_prompt":
+                            user_states[chat_id] = "WAITING_FOR_NEW_BOT_TOKEN"
+                            reply = "🤖 **توکن جدید ربات (Bot Token) را ارسال کنید:**"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "set_gemini_key_prompt":
+                            user_states[chat_id] = "WAITING_FOR_NEW_GEMINI_KEY"
+                            reply = "💎 **کلید جدید جمنای (Gemini API Key) را ارسال کنید:**"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "factory_reset_confirm_prompt":
+                            if os.path.exists(CONFIG_FILE):
+                                os.remove(CONFIG_FILE)
+                            if os.path.exists(TARGETS_FILE):
+                                os.remove(TARGETS_FILE)
+                            if os.path.exists(CHANNELS_FILE):
+                                os.remove(CHANNELS_FILE)
+                            config_db = load_config()
+                            global target_destinations, target_channels
+                            target_destinations = load_target_channels()
+                            target_channels = load_channels()
+                            reply = "🔄 **بازگشت به تنظیمات کارخانه با موفقیت انجام شد.** تمامی تنظیمات به حالت اولیه برگشتند."
+                            http_session.post(f"https://api.telegram.org/bot{config_db.get('bot_token')}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "test_ai_health":
                             test_status = "❌ خطا در اتصال به Gemini"
-                            for mdl in ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-2.0-flash']:
+                            for mdl in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash']:
                                 try:
+                                    key = config_db.get("gemini_api_key", "").strip()
+                                    if key:
+                                        genai.configure(api_key=key)
                                     ai_model = genai.GenerativeModel(mdl)
                                     resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
                                     if resp and resp.text:
@@ -610,7 +679,7 @@ def fast_panel_listener():
                                 except Exception as e2:
                                     test_status = f"❌ خطای هوش مصنوعی: {str(e2)[:80]}"
                             
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"🤖 **گزارش تست سلامت هوش مصنوعی:**\n\n{test_status}", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -621,14 +690,14 @@ def fast_panel_listener():
                                 log_text = "هنوز خبری در این چرخه ثبت نشده است."
                             
                             reply = f"🔍 **آخرین اخبار پردازش‌شده:**\n\n{log_text}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "clear_ram_cache":
                             recent_posts_history.clear()
                             reply = "⚡️ **حافظه کش موقت پاک‌سازی و سرعت بهینه شد.**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -637,7 +706,7 @@ def fast_panel_listener():
                             selected_channels_for_bulk_delete[chat_id] = set()
                             st_text = "🟢 **فعال**" if config_db.get("bot_active", True) else "🔴 **غیرفعال (متوقف)**"
                             reply = "❌ **عملیات لغو شد و به پنل اصلی بازگشتید.**" if action == "cancel_action" else f"🛠 **پنل مدیریت ربات خبری**\n\nوضعیت جمع‌آوری اخبار: {st_text}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -646,20 +715,20 @@ def fast_panel_listener():
                             save_config(config_db)
                             st_text = "🟢 **روشن و فعال شد**" if config_db["bot_active"] else "🔴 **متوقف شد**"
                             reply = f"دستور اجرا شد. وضعیت ربات: {st_text}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_fuzzy_menu":
                             reply = f"🔍 **تنظیمات عدم تکرار هوشمند**\n\nحساسیت فعلی: **{config_db.get('fuzzy_threshold', 70)}%**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_fuzzy_keyboard()
                             }, timeout=3)
 
                         elif action == "toggle_fuzzy_status":
                             config_db["fuzzy_check_active"] = not config_db.get("fuzzy_check_active", True)
                             save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ وضعیت بررسی شباهت تغییر کرد.", "reply_markup": get_fuzzy_keyboard()
                             }, timeout=3)
 
@@ -667,7 +736,7 @@ def fast_panel_listener():
                             val = int(action.replace("set_fuzzy_", ""))
                             config_db["fuzzy_threshold"] = val
                             save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"✅ حساسیت روی {val}% تنظیم شد.", "reply_markup": get_fuzzy_keyboard()
                             }, timeout=3)
 
@@ -675,20 +744,20 @@ def fast_panel_listener():
                             sh = config_db.get("quiet_start_hour", 0)
                             eh = config_db.get("quiet_end_hour", 6)
                             reply = f"🌙 **تنظیمات خاموشی شبانه**\n\nبازه فعلی: از ساعت **{sh:02d}:00** تا **{eh:02d}:00**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
 
                         elif action == "toggle_quiet_status":
                             config_db["quiet_hours_active"] = not config_db.get("quiet_hours_active", False)
                             save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ وضعیت خاموشی شبانه تغییر کرد.", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
 
                         elif action == "set_quiet_start_prompt":
                             reply = "⏰ **ساعت شروع خاموشی را انتخاب کنید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_hour_picker_keyboard("qstart")
                             }, timeout=3)
 
@@ -697,13 +766,13 @@ def fast_panel_listener():
                             config_db["quiet_start_hour"] = h
                             save_config(config_db)
                             reply = f"✅ ساعت شروع روی **{h:02d}:00** تنظیم شد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
 
                         elif action == "set_quiet_end_prompt":
                             reply = "⏰ **ساعت پایان خاموشی را انتخاب کنید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_hour_picker_keyboard("qend")
                             }, timeout=3)
 
@@ -712,30 +781,30 @@ def fast_panel_listener():
                             config_db["quiet_end_hour"] = h
                             save_config(config_db)
                             reply = f"✅ ساعت پایان روی **{h:02d}:00** تنظیم شد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_backup_reset_menu":
                             reply = "💾 **مدیریت دیتابیس و پشتیبان‌گیری**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_backup_reset_keyboard()
                             }, timeout=3)
 
                         elif action == "download_config_file":
                             if os.path.exists(CONFIG_FILE):
                                 with open(CONFIG_FILE, "rb") as f:
-                                    http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
+                                    http_session.post(f"https://api.telegram.org/bot{token}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
 
                         elif action == "download_db_file":
                             if os.path.exists(DB_FILE):
                                 with open(DB_FILE, "rb") as f:
-                                    http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
+                                    http_session.post(f"https://api.telegram.org/bot{token}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
 
                         elif action == "reset_db_confirm_prompt":
                             clear_seen_posts()
                             reply = "🧹 **حافظه اخبار پاک‌سازی شد.**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -743,14 +812,14 @@ def fast_panel_listener():
                             admins = config_db.get("admin_ids", [])
                             adm_list = "\n".join([f"• `{a}`" for a in admins])
                             reply = f"👑 **لیست ادمین‌ها:**\n\n{adm_list}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
                             }, timeout=3)
 
                         elif action == "add_admin_prompt":
                             user_states[chat_id] = "WAITING_FOR_NEW_ADMIN"
                             reply = "👑 **شناسه عددی ادمین جدید را بفرستید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
@@ -761,7 +830,7 @@ def fast_panel_listener():
                                 admins.remove(adm_id)
                                 save_config(config_db)
                                 reply = "❌ ادمین حذف شد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
                             }, timeout=3)
 
@@ -770,21 +839,21 @@ def fast_panel_listener():
                             gk_text = "\n".join([f"• `{w}`" for w in gk]) if gk else "خالی"
                             st = "🟢 فعال" if config_db.get("golden_keywords_active", False) else "🔴 غیرفعال"
                             reply = f"🎯 **کلیدواژه‌های طلایی**\nوضعیت: {st}\n{gk_text}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
 
                         elif action == "toggle_golden_status":
                             config_db["golden_keywords_active"] = not config_db.get("golden_keywords_active", False)
                             save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ وضعیت تغییر کرد.", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
 
                         elif action == "add_golden_word_prompt":
                             user_states[chat_id] = "WAITING_FOR_GOLDEN_WORD"
                             reply = "🎯 **کلمه طلایی جدید را بفرستید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
@@ -794,20 +863,20 @@ def fast_panel_listener():
                             if 0 <= idx < len(gk):
                                 gk.pop(idx)
                                 save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ حذف شد.", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_list":
                             reply = f"📋 **کانال‌های مبدا ({len(target_channels)}/20):**\n\n" + "\n".join([f"{idx}. `{c}`" for idx, c in enumerate(target_channels, 1)])
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_bulk_delete_menu":
                             selected_channels_for_bulk_delete[chat_id] = set()
-                            reply = "☑️ **حذف دسته‌جمعی کانال‌ها**\nروی کانال‌های مورد نظر کلیک کنید تا انتخاب شوند:"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            reply = "☑️ **مدیریت و حذف دسته‌جمعی کانال‌های مبدا**\nروی کانال‌های مورد نظر کلیک کنید تا انتخاب شوند:"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_bulk_delete_keyboard(chat_id)
                             }, timeout=3)
 
@@ -820,7 +889,7 @@ def fast_panel_listener():
                             else:
                                 selected_channels_for_bulk_delete[chat_id].add(ch)
                             try:
-                                http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup", json={
+                                http_session.post(f"https://api.telegram.org/bot{token}/editMessageReplyMarkup", json={
                                     "chat_id": chat_id, "message_id": msg.get("message_id"), "reply_markup": get_bulk_delete_keyboard(chat_id)
                                 }, timeout=3)
                             except Exception:
@@ -834,26 +903,26 @@ def fast_panel_listener():
                                         target_channels.remove(ch)
                                 save_channels(target_channels)
                                 selected_channels_for_bulk_delete[chat_id] = set()
-                                reply = "✅ کانال‌های انتخاب‌شده با موفقیت حذف شدند."
+                                reply = "✅ کانال‌های مبدا انتخاب‌شده با موفقیت حذف شدند."
                             else:
                                 reply = "⚠️ هیچ کانالی انتخاب نشده است."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_add_prompt":
                             if len(target_channels) >= 20:
-                                reply = "⚠️ ظرفیت تکمیل است."
+                                reply = "⚠️ ظرفیت کانال‌های مبدا تکمیل است."
                             else:
                                 user_states[chat_id] = "WAITING_FOR_CHANNEL_NAME"
                                 reply = "📥 **آیدی کانال مبدا جدید را بفرستید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_delete_menu":
-                            reply = "🗑 **روی کانال برای حذف کلیک کنید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            reply = "🗑 **روی کانال مبدا برای حذف تکی کلیک کنید:**"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_delete_channels_keyboard()
                             }, timeout=3)
 
@@ -862,13 +931,13 @@ def fast_panel_listener():
                             if ch_to_del in target_channels:
                                 target_channels.remove(ch_to_del)
                                 save_channels(target_channels)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"✅ کانال {ch_to_del} حذف شد.", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_interval_menu":
                             reply = f"⏱ **فاصله بررسی:** {config_db.get('check_interval', 10)} ثانیه"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_interval_keyboard()
                             }, timeout=3)
 
@@ -876,14 +945,14 @@ def fast_panel_listener():
                             sec = int(action.replace("set_interval_", ""))
                             config_db["check_interval"] = sec
                             save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"✅ روی {sec} ثانیه تنظیم شد.", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_sig_prompt":
                             user_states[chat_id] = "WAITING_FOR_SIGNATURE"
                             reply = "✏️ **متن امضای جدید را بفرستید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
@@ -891,14 +960,14 @@ def fast_panel_listener():
                             bl = config_db.get("blacklist", [])
                             bl_text = "\n".join([f"• `{w}`" for w in bl]) if bl else "خالی"
                             reply = f"🚫 **لیست سیاه:**\n{bl_text}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "add_bl_word_prompt":
                             user_states[chat_id] = "WAITING_FOR_BLACKLIST_WORD"
                             reply = "✏️ **کلمه جدید لیست سیاه را بفرستید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
@@ -908,21 +977,21 @@ def fast_panel_listener():
                             if 0 <= idx < len(bl):
                                 bl.pop(idx)
                                 save_config(config_db)
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ حذف شد.", "reply_markup": get_blacklist_keyboard()
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ حذف شد.", "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_force_post_prompt":
                             user_states[chat_id] = "WAITING_FOR_FORCE_POST"
                             reply = "⚡️ **خبر دستی خود را بفرستید:**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_status":
                             st_icon = "🟢 روشن" if config_db.get("bot_active", True) else "🔴 خاموش"
-                            reply = f"📊 **آمار ربات**\nوضعیت: {st_icon}\nتعداد مقصدهای فعال: {len(target_destinations)}\nکانال‌های مبدا: {len(target_channels)}"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            reply = f"📊 **آمار ربات**\nوضعیت: {st_icon}\nتعداد مقصدهای فعال: {len(target_destinations)}/5\nکانال‌های مبدا: {len(target_channels)}"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -935,9 +1004,11 @@ def fast_panel_listener():
                         if not text or not is_admin(from_user_id):
                             continue
 
+                        token = config_db.get("bot_token", "").strip()
+
                         if text in ["لغو", "/cancel", "انصراف", "کنسل"]:
                             user_states[chat_id] = None
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "❌ **عملیات لغو شد.**", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
                             continue
@@ -950,12 +1021,41 @@ def fast_panel_listener():
                             if len(parts) >= 2:
                                 new_id = parts[0].strip()
                                 new_un = parts[1].replace("@", "").strip()
-                                target_destinations.append({"chat_id": new_id, "username": new_un})
-                                save_target_channels(target_destinations)
-                                reply = f"✅ کانال مقصد جدید (@{new_un}) افزوده شد."
+                                if len(target_destinations) < 5:
+                                    target_destinations.append({"chat_id": new_id, "username": new_un})
+                                    save_target_channels(target_destinations)
+                                    reply = f"✅ کانال مقصد جدید (@{new_un}) افزوده شد."
+                                else:
+                                    reply = "⚠️ ظرفیت کانال‌های مقصد تکمیل است (حداکثر ۵ کانال)."
                             else:
                                 reply = "❌ فرمت اشتباه است. لطفا به شکل `آیدی_عددی یوزرنیم` بفرستید."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif state == "WAITING_FOR_NEW_BOT_TOKEN":
+                            user_states[chat_id] = None
+                            new_t = text.strip()
+                            if ":" in new_t and len(new_t) > 15:
+                                config_db["bot_token"] = new_t
+                                save_config(config_db)
+                                reply = "✅ توکن جدید ربات ثبت شد."
+                            else:
+                                reply = "❌ توکن نامعتبر است."
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif state == "WAITING_FOR_NEW_GEMINI_KEY":
+                            user_states[chat_id] = None
+                            new_k = text.strip()
+                            if len(new_k) > 10:
+                                config_db["gemini_api_key"] = new_k
+                                save_config(config_db)
+                                reply = "✅ کلید جمنای با موفقیت ثبت شد."
+                            else:
+                                reply = "❌ کلید API نامعتبر است."
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -972,7 +1072,7 @@ def fast_panel_listener():
                                     reply = "⚠️ قبلاً اضافه شده است."
                             except Exception:
                                 reply = "❌ شناسه نامعتبر."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
                             }, timeout=3)
 
@@ -982,10 +1082,10 @@ def fast_panel_listener():
                             if new_ch and new_ch not in target_channels:
                                 target_channels.append(new_ch)
                                 save_channels(target_channels)
-                                reply = f"✅ کانال {new_ch} اضافه شد."
+                                reply = f"✅ کانال مبدا {new_ch} اضافه شد."
                             else:
                                 reply = "❌ نامعتبر یا تکراری."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -996,7 +1096,7 @@ def fast_panel_listener():
                                 config_db.setdefault("golden_keywords", []).append(word)
                                 save_config(config_db)
                                 reply = "✅ کلمه طلایی افزوده شد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
 
@@ -1005,7 +1105,7 @@ def fast_panel_listener():
                             config_db["channel_signature"] = text
                             save_config(config_db)
                             reply = "✅ امضا ثبت شد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
@@ -1016,7 +1116,7 @@ def fast_panel_listener():
                                 config_db.setdefault("blacklist", []).append(word)
                                 save_config(config_db)
                                 reply = "✅ کلمه فیلتر شد."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
@@ -1029,14 +1129,14 @@ def fast_panel_listener():
                             
                             success = send_telegram_post_to_all(post_text)
                             reply = "🚀 **پست به تمامی کانال‌های مقصد ارسال شد.**" if success else "❌ خطا."
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif text.lower() in ["/start", "start", "راهنما", "پنل"]:
                             user_states[chat_id] = None
                             reply = "🛠 **پنل مدیریت ربات خبری**"
-                            http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
         except Exception:
