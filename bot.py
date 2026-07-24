@@ -48,9 +48,9 @@ config_db = {
     "categories_active": True,
     
     # تنظیمات پیشرفته ترجمه و زبان‌ها
-    "target_language": "fa", # زبان مقصد پیش‌فرض (fa, en, ar و غیره)
-    "allowed_languages": {"en": True, "ar": True, "fr": True, "tr": True}, # لیست سفید زبان‌های مبدا مجاز برای ترجمه
-    "translation_tag_active": True, # افزودن برچسب ترجمه ماشینی
+    "target_language": "fa", 
+    "allowed_languages": {"en": True, "ar": True, "fr": True, "tr": True}, 
+    "translation_tag_active": True, 
     
     "fuzzy_check_active": True,
     "fuzzy_threshold": 70,
@@ -106,7 +106,6 @@ def translate_text(text):
     if not text:
         return text, None
     
-    # تشخیص زبان مبدا با بررسی کاراکترها
     eng_chars = len(re.findall(r'[a-zA-Z]', text))
     arb_chars = len(re.findall(r'[\u0600-\u06FF]', text))
     fra_chars = len(re.findall(r'[éàèùâêîôûçËÊÎÔÛÄËÏÖÜ]', text))
@@ -114,17 +113,18 @@ def translate_text(text):
     source_lang = None
     if eng_chars > 15:
         source_lang = "en"
-    elif arb_chars > 15:
+    elif arb_chars > 15 and eng_chars < 5: # اگر متن واقعاً عربی باشد
         source_lang = "ar"
     elif fra_chars > 5:
         source_lang = "fr"
     
+    # اگر متن فارسی است یا زبان مبدا تشخیص داده نشد یا در لیست مجاز نبود، اصلا ترجمه نکن
     if not source_lang:
-        return text, None # متن فارسی یا نامشخص است
+        return text, None 
 
     allowed_langs = config_db.get("allowed_languages", {})
     if not allowed_langs.get(source_lang, True):
-        return text, None # اگر زبان در لیست سفید مجاز نباشد ترجمه نشود
+        return text, None 
 
     target_lang = config_db.get("target_language", "fa")
 
@@ -236,7 +236,6 @@ def clean_fallback(text, translated_from=None):
     sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
     cat_tags = detect_category_and_tags(text)
     
-    # برچسب ترجمه ماشینی در صورت فعال بودن
     trans_tag = ""
     if translated_from and config_db.get("translation_tag_active", True):
         lang_names = {"en": "انگلیسی 🇬🇧", "ar": "عربی 🇸🇦", "fr": "فرانسوی 🇫🇷", "tr": "ترکی 🇹🇷"}
@@ -920,7 +919,7 @@ def fast_panel_listener():
                             sec = int(action.replace("set_interval_", ""))
                             config_db["check_interval"] = sec
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": f"✅ فاصله بررسی روی {sec} ثانیه تنظیم شد.", "reply_markup": get_main_panel_keyboard()
+                                "chat_id": chat_id, "text": f"✅ فاصله بررسی روی {sec} ثانیه تنظیم شد.", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_sig_prompt":
@@ -1147,7 +1146,7 @@ def process_single_channel(channel):
                 
                 if text_div:
                     raw_text = text_div.get_text(separator="\n")
-                    # ترجمه خودکار با تشخیص زبان مبدا
+                    # بررسی و ترجمه فقط در صورتی که زبان خارجی باشد
                     translated_text, src_lang = translate_text(raw_text)
                     final_text = rewrite_with_ai(translated_text, translated_from=src_lang)
                     source_post_url = f"https://t.me/{post_id}"
