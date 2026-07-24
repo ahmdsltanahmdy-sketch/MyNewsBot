@@ -23,19 +23,23 @@ def health():
 
 INITIAL_ADMIN_ID = 97241647
 
-# لیست کانال‌های مبدا (تا 25 کانال)
+# لیست دقیق و اختصاصی کانال‌های مبدا درخواستی شما (ظرفیت تا 25 کانال)
 DEFAULT_CHANNELS = [
-    "iribnews", "sepahnewsir403", "IRNA_1313", "JahanTasnim", 
-    "ClashReport", "TasnimNews", "FarsNewsInt", "mizanplus",
-    "ISNAFA", "KhabarOnline_ir", "Mehrnews", "YjcNewsChannel", 
-    "mashreghnews_channel", "Jahan_Fouri", "jamarannews"
+    "iribnews", 
+    "sepahnewsir403", 
+    "IRNA_1313", 
+    "JahanTasnim", 
+    "ClashReport", 
+    "TasnimNews", 
+    "FarsNewsInt", 
+    "mizanplus"
 ]
 
 DEFAULT_TARGETS = [
     {"chat_id": "-1002038404831", "username": "Rallyir"}
 ]
 
-# ذخیره تنظیمات پیشرفته در حافظه رم
+# ذخیره تنظیمات در حافظه رم
 config_db = {
     "bot_active": True,
     "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
@@ -934,12 +938,12 @@ def fast_panel_listener():
                             if 0 <= idx < len(bl):
                                 bl.pop(idx)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "reply_markup": get_blacklist_keyboard()
+                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_force_post_prompt":
                             user_states[chat_id] = "WAITING_FOR_FORCE_POST"
-                            reply = "🚀 **ارسال پست دستی**\n\n---" + "\nمتن خبر دلخواه خود را بفرستید تا فوراً ارسال شود:"
+                            reply = "🚀 **ارسال پست دستی**\n\n---" + "\nمتن خبر دلخواه خود را بفرستید (در صورت نیاز به زبان خارجی، ربات آن را ترجمه خواهد کرد):"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
@@ -1085,13 +1089,16 @@ def fast_panel_listener():
 
                         elif state == "WAITING_FOR_FORCE_POST":
                             user_states[chat_id] = None
-                            default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
-                            sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
-                            clean_text = sanitize_all_links(text)
-                            post_text = clean_extra_spaces(f"📌 <b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}")
+                            # ترجمه خودکار پست دستی در صورت نیاز
+                            translated_text, src_lang = translate_text(text)
+                            final_post = rewrite_with_ai(translated_text, translated_from=src_lang)
                             
-                            news_queue.put({"text": post_text, "url": None})
-                            reply = "🚀 **پست به صف انتشار اضافه شد و به زودی ارسال خواهد شد.**"
+                            if final_post:
+                                news_queue.put({"text": final_post, "url": None})
+                                reply = "🚀 **پست دستی (با بررسی ترجمه) به صف انتشار اضافه شد.**"
+                            else:
+                                reply = "❌ خطا در پردازش پست دستی."
+                                
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
