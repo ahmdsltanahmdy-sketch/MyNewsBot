@@ -22,7 +22,7 @@ def health():
     return "Healthy", 200
 
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip()
-GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "AQ.Ab8RN6LoUe_micSnpWDgAzhuJU4UPWaBISmYXgq7KH2jZ7ZW1A").strip()
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 
 INITIAL_ADMIN_ID = 97241647
 
@@ -262,8 +262,7 @@ def rewrite_with_ai(raw_text):
         f"متن خبر:\n{raw_text}"
     )
 
-    # تست امن و هوشمند مدل‌های استاندارد و جدید گوگل
-    for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash']:
+    for model_name in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']:
         try:
             ai_model = genai.GenerativeModel(model_name)
             response = ai_model.generate_content(prompt, request_options={"timeout": 4})
@@ -599,18 +598,12 @@ def fast_panel_listener():
                         elif action == "test_ai_health":
                             test_status = "❌ خطا در اتصال به Gemini"
                             try:
-                                ai_model = genai.GenerativeModel('gemini-2.5-flash')
+                                ai_model = genai.GenerativeModel('gemini-1.5-flash')
                                 resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
                                 if resp and resp.text:
                                     test_status = f"✅ هوش مصنوعی کاملاً سالم است.\nپاسخ: {resp.text.strip()[:60]}..."
-                            except Exception:
-                                try:
-                                    ai_model = genai.GenerativeModel('gemini-2.0-flash')
-                                    resp = ai_model.generate_content("سلام، تست اتصال ربات است.", request_options={"timeout": 5})
-                                    if resp and resp.text:
-                                        test_status = f"✅ هوش مصنوعی کاملاً سالم است.\nپاسخ: {resp.text.strip()[:60]}..."
-                                except Exception as e2:
-                                    test_status = f"❌ خطای هوش مصنوعی: {str(e2)[:80]}"
+                            except Exception as e2:
+                                test_status = f"❌ خطای هوش مصنوعی: {str(e2)[:80]}"
                             
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"🤖 **گزارش تست سلامت هوش مصنوعی:**\n\n{test_status}", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
@@ -762,7 +755,7 @@ def fast_panel_listener():
                             if adm_id in admins and adm_id != INITIAL_ADMIN_ID:
                                 admins.remove(adm_id)
                                 save_config(config_db)
-                                reply = f"❌ ادمین حذف شد."
+                                reply = "❌ ادمین حذف شد."
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
                             }, timeout=3)
@@ -904,7 +897,7 @@ def fast_panel_listener():
                                 bl.pop(idx)
                                 save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ حذف شد.", "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
+                                "chat_id": chat_id, "text": "✅ حذف شد.", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_force_post_prompt":
@@ -962,7 +955,7 @@ def fast_panel_listener():
                                 if new_adm not in admins:
                                     admins.append(new_adm)
                                     save_config(config_db)
-                                    reply = f"✅ ادمین جدید افزوده شد."
+                                    reply = "✅ ادمین جدید افزوده شد."
                                 else:
                                     reply = "⚠️ قبلاً اضافه شده است."
                             except Exception:
@@ -990,7 +983,7 @@ def fast_panel_listener():
                             if word:
                                 config_db.setdefault("golden_keywords", []).append(word)
                                 save_config(config_db)
-                                reply = f"✅ کلمه طلایی افزوده شد."
+                                reply = "✅ کلمه طلایی افزوده شد."
                             http_session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
@@ -1072,9 +1065,9 @@ def process_single_channel(channel):
                             last_processed_news_log.append(f"[{channel}] {first_line} (<a href='{source_post_url}'>منبع</a>)")
                             if len(last_processed_news_log) > 5:
                                 last_processed_news_log.pop(0)
-                    else:
-                        seen_post_ids.add(post_id)
-                        save_seen_post(post_id)
+                else:
+                    seen_post_ids.add(post_id)
+                    save_seen_post(post_id)
     except Exception:
         pass
 
