@@ -46,7 +46,12 @@ config_db = {
         "فناوری": ["هوش مصنوعی", "گوشی", "اینترنت", "تکنولوژی", "آپدیت"]
     },
     "categories_active": True,
-    "auto_translate_english": True, # ترجمه خودکار کانال‌های انگلیسی
+    
+    # تنظیمات پیشرفته ترجمه و زبان‌ها
+    "target_language": "fa", # زبان مقصد پیش‌فرض (fa, en, ar و غیره)
+    "allowed_languages": {"en": True, "ar": True, "fr": True, "tr": True}, # لیست سفید زبان‌های مبدا مجاز برای ترجمه
+    "translation_tag_active": True, # افزودن برچسب ترجمه ماشینی
+    
     "fuzzy_check_active": True,
     "fuzzy_threshold": 70,
     "quiet_hours_active": False,
@@ -97,21 +102,38 @@ def clear_seen_posts():
         except Exception:
             return False
 
-def translate_to_persian(text):
-    if not text or not config_db.get("auto_translate_english", True):
-        return text
+def translate_text(text):
+    if not text:
+        return text, None
     
-    # تشخیص سریع اینکه متن انگلیسی است یا خیر (حضور حروف انگلیسی بیشتر از فارسی)
+    # تشخیص زبان مبدا با بررسی کاراکترها
     eng_chars = len(re.findall(r'[a-zA-Z]', text))
-    if eng_chars < 15: # اگر متن کوتاه یا فارسی است ترجمه نکن
-        return text
+    arb_chars = len(re.findall(r'[\u0600-\u06FF]', text))
+    fra_chars = len(re.findall(r'[éàèùâêîôûçËÊÎÔÛÄËÏÖÜ]', text))
+    
+    source_lang = None
+    if eng_chars > 15:
+        source_lang = "en"
+    elif arb_chars > 15:
+        source_lang = "ar"
+    elif fra_chars > 5:
+        source_lang = "fr"
+    
+    if not source_lang:
+        return text, None # متن فارسی یا نامشخص است
+
+    allowed_langs = config_db.get("allowed_languages", {})
+    if not allowed_langs.get(source_lang, True):
+        return text, None # اگر زبان در لیست سفید مجاز نباشد ترجمه نشود
+
+    target_lang = config_db.get("target_language", "fa")
 
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
-            "sl": "en",
-            "tl": "fa",
+            "sl": source_lang,
+            "tl": target_lang,
             "dt": "t",
             "q": text
         }
@@ -120,10 +142,10 @@ def translate_to_persian(text):
             res_json = response.json()
             translated_sentence = "".join([item[0] for item in res_json[0] if item[0]])
             if translated_sentence:
-                return translated_sentence
+                return translated_sentence, source_lang
     except Exception:
         pass
-    return text
+    return text, None
 
 def remove_emojis(text):
     if not text:
@@ -204,7 +226,7 @@ def is_in_quiet_hours():
     else:
         return curr_hour >= start or curr_hour < end
 
-def clean_fallback(text):
+def clean_fallback(text, translated_from=None):
     clean_t = sanitize_all_links(text)
     lines = [l.strip() for l in clean_t.splitlines() if l.strip()]
     if not lines:
@@ -213,10 +235,18 @@ def clean_fallback(text):
     default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
     sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
     cat_tags = detect_category_and_tags(text)
-    body = "\n\n".join(lines)
-    return clean_extra_spaces(f"{body}\n\n{cat_tags}\n\n{sig}")
+    
+    # برچسب ترجمه ماشینی در صورت فعال بودن
+    trans_tag = ""
+    if translated_from and config_db.get("translation_tag_active", True):
+        lang_names = {"en": "انگلیسی 🇬🇧", "ar": "عربی 🇸🇦", "fr": "فرانسوی 🇫🇷", "tr": "ترکی 🇹🇷"}
+        l_name = lang_names.get(translated_from, translated_from)
+        trans_tag = f"\n\n🌐 [ترجمه ماشینی از {l_name}]"
 
-def rewrite_with_ai(raw_text):
+    body = "\n\n".join(lines)
+    return clean_extra_spaces(f"{body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
+
+def rewrite_with_ai(raw_text, translated_from=None):
     if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
         return None
 
@@ -225,7 +255,7 @@ def rewrite_with_ai(raw_text):
 
     key = config_db.get("gemini_api_key", "").strip()
     if not key:
-        return clean_fallback(raw_text)
+        return clean_fallback(raw_text, translated_from)
 
     try:
         genai.configure(api_key=key)
@@ -260,7 +290,13 @@ def rewrite_with_ai(raw_text):
             default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
             sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
             
-            clean_res = clean_extra_spaces(f"{formatted_body}\n\n{cat_tags}\n\n{sig}")
+            trans_tag = ""
+            if translated_from and config_db.get("translation_tag_active", True):
+                lang_names = {"en": "انگلیسی 🇬🇧", "ar": "عربی 🇸🇦", "fr": "فرانسوی 🇫🇷", "tr": "ترکی 🇹🇷"}
+                l_name = lang_names.get(translated_from, translated_from)
+                trans_tag = f"\n\n🌐 [ترجمه ماشینی از {l_name}]"
+
+            clean_res = clean_extra_spaces(f"{formatted_body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
             recent_posts_history.append(sanitize_all_links(raw_text))
             if len(recent_posts_history) > 30:
                 recent_posts_history.pop(0)
@@ -269,7 +305,7 @@ def rewrite_with_ai(raw_text):
         except Exception:
             continue
 
-    return clean_fallback(raw_text)
+    return clean_fallback(raw_text, translated_from)
 
 def send_telegram_post_to_all(text, source_url=None):
     token = config_db.get("bot_token", BOT_TOKEN).strip()
@@ -346,7 +382,6 @@ def get_main_panel_keyboard():
     queue_st = "🟢" if config_db.get("queue_schedule_active", True) else "🔴"
     queue_sec = config_db.get("queue_interval", 5)
     cat_st = "🟢" if config_db.get("categories_active", True) else "🔴"
-    trans_st = "🟢" if config_db.get("auto_translate_english", True) else "🔴"
 
     return {
         "inline_keyboard": [
@@ -354,8 +389,8 @@ def get_main_panel_keyboard():
                 {"text": f"{status_icon} روشن / خاموش ربات", "callback_data": "toggle_bot_status"}
             ],
             [
-                {"text": f"{queue_st} زمان‌بندی صف ({queue_sec}s)", "callback_data": "panel_queue_menu"},
-                {"text": f"{trans_st} ترجمه خودکار انگلیسی", "callback_data": "toggle_translate_status"}
+                {"text": "🌐 تنظیمات پیشرفته ترجمه", "callback_data": "panel_translation_menu"},
+                {"text": f"{queue_st} صف انتشار ({queue_sec}s)", "callback_data": "panel_queue_menu"}
             ],
             [
                 {"text": f"{cat_st} دسته‌بندی موضوعی", "callback_data": "panel_categories_menu"},
@@ -399,6 +434,31 @@ def get_cancel_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "🚫 انصراف و بازگشت به پنل", "callback_data": "cancel_action"}]
+        ]
+    }
+
+def get_translation_keyboard():
+    tag_st = "🟢 فعال" if config_db.get("translation_tag_active", True) else "🔴 غیرفعال"
+    allowed = config_db.get("allowed_languages", {})
+    en_st = "✅" if allowed.get("en", True) else "❌"
+    ar_st = "✅" if allowed.get("ar", True) else "❌"
+    fr_st = "✅" if allowed.get("fr", True) else "❌"
+    tr_st = "✅" if allowed.get("tr", True) else "❌"
+    t_lang = config_db.get("target_language", "fa").upper()
+
+    return {
+        "inline_keyboard": [
+            [{"text": f"زبان مقصد فعلی: [{t_lang}] (کلیک برای تغییر)", "callback_data": "set_target_lang_prompt"}],
+            [{"text": f"برچسب ترجمه ماشینی در انتها: {tag_st}", "callback_data": "toggle_trans_tag"}],
+            [
+                {"text": f"{en_st} انگلیسی (EN)", "callback_data": "toggle_lang_en"},
+                {"text": f"{ar_st} عربی (AR)", "callback_data": "toggle_lang_ar"}
+            ],
+            [
+                {"text": f"{fr_st} فرانسوی (FR)", "callback_data": "toggle_lang_fr"},
+                {"text": f"{tr_st} ترکی (TR)", "callback_data": "toggle_lang_tr"}
+            ],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
 
@@ -563,10 +623,34 @@ def fast_panel_listener():
                         except Exception:
                             pass
 
-                        if action == "toggle_translate_status":
-                            config_db["auto_translate_english"] = not config_db.get("auto_translate_english", True)
+                        if action == "panel_translation_menu":
+                            t_lang = config_db.get("target_language", "fa").upper()
+                            tag_st = "فعال" if config_db.get("translation_tag_active", True) else "غیرفعال"
+                            reply = f"🌐 **مدیریت پیشرفته ترجمه و زبان‌ها**\n\n---" + f"\n• زبان مقصد: **{t_lang}**\n• برچسب ترجمه ماشینی: **{tag_st}**\n• وضعیت لیست سفید زبان‌های مبدا را از دکمه‌های زیر مدیریت کنید:"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ وضعیت ترجمه خودکار انگلیسی به‌روز شد.", "reply_markup": get_main_panel_keyboard()
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
+                            }, timeout=3)
+
+                        elif action == "set_target_lang_prompt":
+                            user_states[chat_id] = "WAITING_FOR_TARGET_LANG"
+                            reply = "🌐 **تغییر زبان مقصد**\n\n---" + "\nکد زبان مقصد جدید را بفرستید (مثال: `fa` برای فارسی، `en` برای انگلیسی):"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "toggle_trans_tag":
+                            config_db["translation_tag_active"] = not config_db.get("translation_tag_active", True)
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ وضعیت برچسب ترجمه ماشینی به‌روز شد.", "reply_markup": get_translation_keyboard()
+                            }, timeout=3)
+
+                        elif action.startswith("toggle_lang_"):
+                            lang = action.replace("toggle_lang_", "")
+                            allowed = config_db.get("allowed_languages", {})
+                            allowed[lang] = not allowed.get(lang, True)
+                            config_db["allowed_languages"] = allowed
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": f"✅ وضعیت زبان {lang.upper()} در لیست سفید به‌روز شد.", "reply_markup": get_translation_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_queue_menu":
@@ -904,7 +988,19 @@ def fast_panel_listener():
 
                         state = user_states.get(chat_id)
 
-                        if state == "WAITING_FOR_NEW_TARGET":
+                        if state == "WAITING_FOR_TARGET_LANG":
+                            user_states[chat_id] = None
+                            new_lang = text.lower().strip()
+                            if len(new_lang) == 2:
+                                config_db["target_language"] = new_lang
+                                reply = f"✅ زبان مقصد جدید روی **{new_lang.upper()}** تنظیم شد."
+                            else:
+                                reply = "❌ کد زبان نامعتبر است (باید ۲ رقمی باشد مثل fa یا en)."
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
+                            }, timeout=3)
+
+                        elif state == "WAITING_FOR_NEW_TARGET":
                             user_states[chat_id] = None
                             parts = text.split()
                             if len(parts) >= 2:
@@ -1051,9 +1147,9 @@ def process_single_channel(channel):
                 
                 if text_div:
                     raw_text = text_div.get_text(separator="\n")
-                    # ترجمه خودکار در صورت انگلیسی بودن کانال مبدا
-                    translated_text = translate_to_persian(raw_text)
-                    final_text = rewrite_with_ai(translated_text)
+                    # ترجمه خودکار با تشخیص زبان مبدا
+                    translated_text, src_lang = translate_text(raw_text)
+                    final_text = rewrite_with_ai(translated_text, translated_from=src_lang)
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
