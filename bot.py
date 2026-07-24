@@ -2,7 +2,6 @@ import time
 import re
 import os
 import requests
-import json
 import threading
 import difflib
 from datetime import datetime, timezone, timedelta
@@ -21,11 +20,6 @@ def home():
 def health():
     return "Healthy", 200
 
-CONFIG_FILE = "config.json"
-DB_FILE = "seen_posts.txt"
-CHANNELS_FILE = "channels.txt"
-TARGETS_FILE = "target_channels.json"
-
 INITIAL_ADMIN_ID = 97241647
 
 DEFAULT_CHANNELS = [
@@ -38,50 +32,27 @@ DEFAULT_TARGETS = [
     {"chat_id": "-1002038404831", "username": "Rallyir"}
 ]
 
-def load_config():
-    default_config = {
-        "bot_active": True,
-        "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
-        "gemini_api_key": (os.environ.get("GEMINI_API_KEY") or "").strip(),
-        "channel_signature": "🆔 @Rallyir",
-        "blacklist": ["تبلیغات", "تخفیف ویژه"],
-        "golden_keywords": [],
-        "golden_keywords_active": False,
-        "fuzzy_check_active": True,
-        "fuzzy_threshold": 70,
-        "quiet_hours_active": False,
-        "quiet_start_hour": 0,
-        "quiet_end_hour": 6,
-        "check_interval": 10,
-        "admin_ids": [INITIAL_ADMIN_ID]
-    }
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    default_config.update(data)
-        except Exception:
-            pass
-    else:
-        try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(default_config, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+# ذخیره تنظیمات در حافظه رم برای جلوگیری از خطای دیسک در رندر
+config_db = {
+    "bot_active": True,
+    "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
+    "gemini_api_key": (os.environ.get("GEMINI_API_KEY") or "").strip(),
+    "channel_signature": "🆔 @Rallyir",
+    "blacklist": ["تبلیغات", "تخفیف ویژه"],
+    "golden_keywords": [],
+    "golden_keywords_active": False,
+    "fuzzy_check_active": True,
+    "fuzzy_threshold": 70,
+    "quiet_hours_active": False,
+    "quiet_start_hour": 0,
+    "quiet_end_hour": 6,
+    "check_interval": 10,
+    "admin_ids": [INITIAL_ADMIN_ID]
+}
 
-    if INITIAL_ADMIN_ID not in default_config.get("admin_ids", []):
-        default_config.setdefault("admin_ids", []).append(INITIAL_ADMIN_ID)
-    return default_config
-
-def save_config(cfg):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Config Save Error: {e}")
-
-config_db = load_config()
+target_channels = DEFAULT_CHANNELS.copy()
+target_destinations = DEFAULT_TARGETS.copy()
+seen_post_ids = set()
 
 BOT_TOKEN = config_db.get("bot_token", "")
 GEMINI_API_KEY = config_db.get("gemini_api_key", "")
@@ -102,92 +73,28 @@ selected_channels_for_bulk_delete = {}
 recent_posts_history = []
 last_processed_news_log = []
 db_lock = threading.Lock()
+last_update_id = 0
 
-def load_target_channels():
-    if os.path.exists(TARGETS_FILE):
-        try:
-            with open(TARGETS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list) and data:
-                    return data[:5]
-        except Exception:
-            pass
-    else:
-        try:
-            with open(TARGETS_FILE, "w", encoding="utf-8") as f:
-                json.dump(DEFAULT_TARGETS, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-    return DEFAULT_TARGETS.copy()
+def save_config(cfg):
+    pass # در رندر نیازی به ذخیره روی فایل نیست
 
 def save_target_channels(targets):
-    try:
-        with open(TARGETS_FILE, "w", encoding="utf-8") as f:
-            json.dump(targets[:5], f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Targets Save Error: {e}")
+    pass
 
-target_destinations = load_target_channels()
+def save_channels(channels):
+    pass
 
 def is_admin(user_id):
     admins = config_db.get("admin_ids", [])
     return (user_id in admins) or (user_id == INITIAL_ADMIN_ID)
 
-def load_seen_posts():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                return set(line.strip() for line in f if line.strip())
-        except Exception:
-            pass
-    return set()
-
-def save_seen_post(post_id):
-    with db_lock:
-        try:
-            with open(DB_FILE, "a", encoding="utf-8") as f:
-                f.write(f"{post_id}\n")
-        except Exception:
-            pass
-
 def clear_seen_posts():
     with db_lock:
         try:
-            open(DB_FILE, "w", encoding="utf-8").close()
             seen_post_ids.clear()
             return True
         except Exception:
             return False
-
-def load_channels():
-    if os.path.exists(CHANNELS_FILE):
-        try:
-            with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
-                channels = [line.strip() for line in f if line.strip()]
-                if channels:
-                    return channels[:20]
-        except Exception:
-            pass
-    else:
-        try:
-            with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
-                for ch in DEFAULT_CHANNELS:
-                    f.write(f"{ch}\n")
-        except Exception:
-            pass
-    return DEFAULT_CHANNELS.copy()
-
-def save_channels(channels):
-    try:
-        with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
-            for ch in channels[:20]:
-                f.write(f"{ch}\n")
-    except Exception:
-        pass
-
-seen_post_ids = load_seen_posts()
-target_channels = load_channels()
-last_update_id = 0
 
 def remove_emojis(text):
     if not text:
@@ -417,7 +324,7 @@ def get_main_panel_keyboard():
                 {"text": "👑 ادمین‌ها", "callback_data": "panel_admins_menu"}
             ],
             [
-                {"text": "💾 بک‌آپ و ریست", "callback_data": "panel_backup_reset_menu"},
+                {"text": "💾 ریست دیتابیس", "callback_data": "panel_backup_reset_menu"},
                 {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
             ],
             [
@@ -499,12 +406,7 @@ def get_hour_picker_keyboard(action_prefix):
 def get_backup_reset_keyboard():
     return {
         "inline_keyboard": [
-            [
-                {"text": "📥 دانلود بک‌آپ", "callback_data": "download_config_file"},
-                {"text": "📥 دانلود دیتابیس", "callback_data": "download_db_file"}
-            ],
-            [{"text": "🧹 ریست حافظه اخبار", "callback_data": "reset_db_confirm_prompt"}],
-            [{"text": "🔄 بازگشت به تنظیمات کارخانه", "callback_data": "factory_reset_confirm_prompt"}],
+            [{"text": "🧹 ریست حافظه اخبار دیده‌شده", "callback_data": "reset_db_confirm_prompt"}],
             [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
@@ -644,7 +546,6 @@ def fast_panel_listener():
                             idx = int(action.replace("del_target_", ""))
                             if 0 <= idx < len(target_destinations) and len(target_destinations) > 1:
                                 removed = target_destinations.pop(idx)
-                                save_target_channels(target_destinations)
                                 reply = f"❌ کانال مقصد @{removed['username']} حذف شد."
                             else:
                                 reply = "⚠️ حداقل باید یک کانال مقصد وجود داشته باشد."
@@ -674,22 +575,6 @@ def fast_panel_listener():
                             reply = "💎 **تغییر کلید جمنای**\n\n---" + "\nکلید جدید جمنای (Gemini API Key) را ارسال کنید:"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
-                            }, timeout=3)
-
-                        elif action == "factory_reset_confirm_prompt":
-                            if os.path.exists(CONFIG_FILE):
-                                os.remove(CONFIG_FILE)
-                            if os.path.exists(TARGETS_FILE):
-                                os.remove(TARGETS_FILE)
-                            if os.path.exists(CHANNELS_FILE):
-                                os.remove(CHANNELS_FILE)
-                            config_db = load_config()
-                            global target_destinations, target_channels
-                            target_destinations = load_target_channels()
-                            target_channels = load_channels()
-                            reply = "🔄 **بازگشت به تنظیمات کارخانه**\n\n---" + "\nتمامی تنظیمات با موفقیت به حالت اولیه برگشتند."
-                            http_session.post(f"https://api.telegram.org/bot{config_db.get('bot_token')}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "test_ai_health":
@@ -741,7 +626,6 @@ def fast_panel_listener():
 
                         elif action == "toggle_bot_status":
                             config_db["bot_active"] = not config_db.get("bot_active", True)
-                            save_config(config_db)
                             st_text = "🟢 **روشن و فعال شد**" if config_db["bot_active"] else "🔴 **متوقف شد**"
                             reply = f"⚙️ **تغییر وضعیت ربات**\n\n---" + f"\nوضعیت جدید: {st_text}"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
@@ -756,7 +640,6 @@ def fast_panel_listener():
 
                         elif action == "toggle_fuzzy_status":
                             config_db["fuzzy_check_active"] = not config_db.get("fuzzy_check_active", True)
-                            save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ وضعیت سیستم ضدتکرار به‌روز شد.", "reply_markup": get_fuzzy_keyboard()
                             }, timeout=3)
@@ -764,7 +647,6 @@ def fast_panel_listener():
                         elif action.startswith("set_fuzzy_"):
                             val = int(action.replace("set_fuzzy_", ""))
                             config_db["fuzzy_threshold"] = val
-                            save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"✅ حساسیت روی {val}% تنظیم شد.", "reply_markup": get_fuzzy_keyboard()
                             }, timeout=3)
@@ -779,7 +661,6 @@ def fast_panel_listener():
 
                         elif action == "toggle_quiet_status":
                             config_db["quiet_hours_active"] = not config_db.get("quiet_hours_active", False)
-                            save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ وضعیت خاموشی شبانه به‌روز شد.", "reply_markup": get_quiet_keyboard()
                             }, timeout=3)
@@ -793,7 +674,6 @@ def fast_panel_listener():
                         elif action.startswith("qstart_"):
                             h = int(action.replace("qstart_", ""))
                             config_db["quiet_start_hour"] = h
-                            save_config(config_db)
                             reply = f"✅ ساعت شروع روی **{h:02d}:00** تنظیم شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
@@ -808,7 +688,6 @@ def fast_panel_listener():
                         elif action.startswith("qend_"):
                             h = int(action.replace("qend_", ""))
                             config_db["quiet_end_hour"] = h
-                            save_config(config_db)
                             reply = f"✅ ساعت پایان روی **{h:02d}:00** تنظیم شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_quiet_keyboard()
@@ -819,16 +698,6 @@ def fast_panel_listener():
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_backup_reset_keyboard()
                             }, timeout=3)
-
-                        elif action == "download_config_file":
-                            if os.path.exists(CONFIG_FILE):
-                                with open(CONFIG_FILE, "rb") as f:
-                                    http_session.post(f"https://api.telegram.org/bot{token}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
-
-                        elif action == "download_db_file":
-                            if os.path.exists(DB_FILE):
-                                with open(DB_FILE, "rb") as f:
-                                    http_session.post(f"https://api.telegram.org/bot{token}/sendDocument", data={"chat_id": chat_id}, files={"document": f}, timeout=10)
 
                         elif action == "reset_db_confirm_prompt":
                             clear_seen_posts()
@@ -857,7 +726,6 @@ def fast_panel_listener():
                             admins = config_db.get("admin_ids", [])
                             if adm_id in admins and adm_id != INITIAL_ADMIN_ID:
                                 admins.remove(adm_id)
-                                save_config(config_db)
                                 reply = "❌ ادمین مورد نظر حذف شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_admins_keyboard()
@@ -874,7 +742,6 @@ def fast_panel_listener():
 
                         elif action == "toggle_golden_status":
                             config_db["golden_keywords_active"] = not config_db.get("golden_keywords_active", False)
-                            save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ وضعیت فیلتر کلیدواژه‌های طلایی تغییر کرد.", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
@@ -891,7 +758,6 @@ def fast_panel_listener():
                             gk = config_db.get("golden_keywords", [])
                             if 0 <= idx < len(gk):
                                 gk.pop(idx)
-                                save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ کلمه طلایی حذف شد.", "reply_markup": get_golden_keyboard()
                             }, timeout=3)
@@ -930,7 +796,6 @@ def fast_panel_listener():
                                 for ch in list(selected):
                                     if ch in target_channels:
                                         target_channels.remove(ch)
-                                save_channels(target_channels)
                                 selected_channels_for_bulk_delete[chat_id] = set()
                                 reply = "✅ کانال‌های مبدا انتخاب‌شده حذف شدند."
                             else:
@@ -959,7 +824,6 @@ def fast_panel_listener():
                             ch_to_del = action.replace("del_ch_", "")
                             if ch_to_del in target_channels:
                                 target_channels.remove(ch_to_del)
-                                save_channels(target_channels)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"✅ کانال {ch_to_del} حذف شد.", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -973,7 +837,6 @@ def fast_panel_listener():
                         elif action.startswith("set_interval_"):
                             sec = int(action.replace("set_interval_", ""))
                             config_db["check_interval"] = sec
-                            save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": f"✅ فاصله بررسی روی {sec} ثانیه تنظیم شد.", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -1005,7 +868,6 @@ def fast_panel_listener():
                             bl = config_db.get("blacklist", [])
                             if 0 <= idx < len(bl):
                                 bl.pop(idx)
-                                save_config(config_db)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
@@ -1052,7 +914,6 @@ def fast_panel_listener():
                                 new_un = parts[1].replace("@", "").strip()
                                 if len(target_destinations) < 5:
                                     target_destinations.append({"chat_id": new_id, "username": new_un})
-                                    save_target_channels(target_destinations)
                                     reply = f"✅ کانال مقصد جدید (@{new_un}) افزوده شد."
                                 else:
                                     reply = "⚠️ ظرفیت کانال‌های مقصد تکمیل است (حداکثر ۵ کانال)."
@@ -1067,7 +928,6 @@ def fast_panel_listener():
                             new_t = text.strip()
                             if ":" in new_t and len(new_t) > 15:
                                 config_db["bot_token"] = new_t
-                                save_config(config_db)
                                 reply = "✅ توکن جدید ربات ثبت شد."
                             else:
                                 reply = "❌ توکن نامعتبر است."
@@ -1080,7 +940,6 @@ def fast_panel_listener():
                             new_k = text.strip()
                             if len(new_k) > 10:
                                 config_db["gemini_api_key"] = new_k
-                                save_config(config_db)
                                 reply = "✅ کلید جمنای با موفقیت ثبت شد."
                             else:
                                 reply = "❌ کلید API نامعتبر است."
@@ -1095,7 +954,6 @@ def fast_panel_listener():
                                 admins = config_db.get("admin_ids", [])
                                 if new_adm not in admins:
                                     admins.append(new_adm)
-                                    save_config(config_db)
                                     reply = "✅ ادمین جدید افزوده شد."
                                 else:
                                     reply = "⚠️ قبلاً اضافه شده است."
@@ -1110,7 +968,6 @@ def fast_panel_listener():
                             new_ch = text.replace("@", "").replace("https://t.me/", "").strip()
                             if new_ch and new_ch not in target_channels:
                                 target_channels.append(new_ch)
-                                save_channels(target_channels)
                                 reply = f"✅ کانال مبدا {new_ch} اضافه شد."
                             else:
                                 reply = "❌ نامعتبر یا تکراری."
@@ -1123,7 +980,6 @@ def fast_panel_listener():
                             word = text.strip()
                             if word:
                                 config_db.setdefault("golden_keywords", []).append(word)
-                                save_config(config_db)
                                 reply = "✅ کلمه طلایی افزوده شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
@@ -1132,7 +988,6 @@ def fast_panel_listener():
                         elif state == "WAITING_FOR_SIGNATURE":
                             user_states[chat_id] = None
                             config_db["channel_signature"] = text
-                            save_config(config_db)
                             reply = "✅ امضا ثبت شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
@@ -1143,7 +998,6 @@ def fast_panel_listener():
                             word = text.strip()
                             if word:
                                 config_db.setdefault("blacklist", []).append(word)
-                                save_config(config_db)
                                 reply = "✅ کلمه فیلتر شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
@@ -1201,14 +1055,12 @@ def process_single_channel(channel):
                         success = send_telegram_post_to_all(final_text, source_post_url)
                         if success:
                             seen_post_ids.add(post_id)
-                            save_seen_post(post_id)
                             first_line = final_text.splitlines()[0].replace("<b>", "").replace("</b>", "").replace("📌 ", "")
                             last_processed_news_log.append(f"[{channel}] {first_line}")
                             if len(last_processed_news_log) > 5:
                                 last_processed_news_log.pop(0)
                 else:
                     seen_post_ids.add(post_id)
-                    save_seen_post(post_id)
     except Exception:
         pass
 
