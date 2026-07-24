@@ -23,7 +23,6 @@ def health():
 
 INITIAL_ADMIN_ID = 97241647
 
-# لیست دقیق و اختصاصی کانال‌های مبدا درخواستی شما (ظرفیت تا 25 کانال)
 DEFAULT_CHANNELS = [
     "iribnews", 
     "sepahnewsir403", 
@@ -39,7 +38,6 @@ DEFAULT_TARGETS = [
     {"chat_id": "-1002038404831", "username": "Rallyir"}
 ]
 
-# ذخیره تنظیمات در حافظه رم
 config_db = {
     "bot_active": True,
     "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
@@ -52,12 +50,9 @@ config_db = {
         "فناوری": ["هوش مصنوعی", "گوشی", "اینترنت", "تکنولوژی", "آپدیت"]
     },
     "categories_active": True,
-    
-    # تنظیمات ترجمه
     "target_language": "fa", 
     "allowed_languages": {"en": True, "ar": True, "he": True, "fr": True, "tr": True}, 
     "translation_tag_active": True, 
-    
     "fuzzy_check_active": True,
     "fuzzy_threshold": 70,
     "quiet_hours_active": False,
@@ -118,7 +113,6 @@ def translate_text(text):
     arabic_pure_chars = len(re.findall(r'[\u0600-\u06FF]', text))
     
     source_lang = None
-    
     if persian_chars > 20 and persian_chars >= eng_chars:
         return text, None
 
@@ -213,35 +207,17 @@ def detect_category_and_tags(text):
         tags.append("#خبر_فوری")
     return " ".join(tags[:3])
 
-def is_fuzzy_duplicate(new_text):
-    if not config_db.get("fuzzy_check_active", True):
-        return False
-    threshold = config_db.get("fuzzy_threshold", 70) / 100.0
-    clean_new = sanitize_all_links(new_text)
-    for past_text in recent_posts_history[-20:]:
-        similarity = difflib.SequenceMatcher(None, clean_new, past_text).ratio()
-        if similarity >= threshold:
-            return True
-    return False
-
-def is_in_quiet_hours():
-    if not config_db.get("quiet_hours_active", False):
-        return False
-    ir_time = datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
-    curr_hour = ir_time.hour
-    start = config_db.get("quiet_start_hour", 0)
-    end = config_db.get("quiet_end_hour", 6)
-    if start <= end:
-        return start <= curr_hour < end
-    else:
-        return curr_hour >= start or curr_hour < end
-
 def clean_fallback(text, translated_from=None):
     clean_t = sanitize_all_links(text)
+    if not clean_t:
+        clean_t = text
     lines = [l.strip() for l in clean_t.splitlines() if l.strip()]
     if not lines:
-        return ""
-    lines[0] = f"📌 <b>{lines[0]}</b>"
+        lines = [text]
+    
+    headline = lines[0][:50]
+    lines[0] = f"📌 <b>{headline}</b>"
+    
     default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
     sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
     cat_tags = detect_category_and_tags(text)
@@ -256,11 +232,8 @@ def clean_fallback(text, translated_from=None):
     return clean_extra_spaces(f"{body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
 
 def rewrite_with_ai(raw_text, translated_from=None):
-    if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
-        return None
-
-    if is_fuzzy_duplicate(raw_text):
-        return None
+    if not raw_text or check_blacklist(raw_text):
+        return clean_fallback(raw_text, translated_from)
 
     key = config_db.get("gemini_api_key", "").strip()
     if not key:
@@ -269,7 +242,7 @@ def rewrite_with_ai(raw_text, translated_from=None):
     try:
         genai.configure(api_key=key)
     except Exception:
-        pass
+        return clean_fallback(raw_text, translated_from)
 
     cat_tags = detect_category_and_tags(raw_text)
     prompt = (
@@ -284,13 +257,13 @@ def rewrite_with_ai(raw_text, translated_from=None):
     for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash', 'gemini-1.5-flash']:
         try:
             ai_model = genai.GenerativeModel(model_name)
-            response = ai_model.generate_content(prompt, request_options={"timeout": 4})
+            response = ai_model.generate_content(prompt, request_options={"timeout": 5})
             result = response.text.strip()
 
             result = sanitize_all_links(result)
             lines = [line.strip() for line in result.splitlines() if line.strip()]
             if not lines:
-                return None
+                continue
 
             headline = lines[0].replace("<b>", "").replace("</b>", "")
             lines[0] = f"📌 <b>{headline}</b>"
@@ -306,10 +279,6 @@ def rewrite_with_ai(raw_text, translated_from=None):
                 trans_tag = f"\n\n{emoji_flag}"
 
             clean_res = clean_extra_spaces(f"{formatted_body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
-            recent_posts_history.append(sanitize_all_links(raw_text))
-            if len(recent_posts_history) > 30:
-                recent_posts_history.pop(0)
-
             return clean_res
         except Exception:
             continue
@@ -387,63 +356,29 @@ def queue_worker():
 def get_main_panel_keyboard():
     status_icon = "🟢" if config_db.get("bot_active", True) else "🔴"
     interval = config_db.get("check_interval", 10)
-    
     queue_st = "🟢" if config_db.get("queue_schedule_active", True) else "🔴"
     queue_sec = config_db.get("queue_interval", 5)
     cat_st = "🟢" if config_db.get("categories_active", True) else "🔴"
 
     return {
         "inline_keyboard": [
-            [
-                {"text": f"{status_icon} روشن / خاموش ربات", "callback_data": "toggle_bot_status"}
-            ],
-            [
-                {"text": "🌐 تنظیمات ترجمه", "callback_data": "panel_translation_menu"},
-                {"text": f"{queue_st} صف انتشار ({queue_sec}s)", "callback_data": "panel_queue_menu"}
-            ],
-            [
-                {"text": f"{cat_st} دسته‌بندی موضوعی", "callback_data": "panel_categories_menu"},
-                {"text": "📡 سلامت مبدا", "callback_data": "panel_health_monitor"}
-            ],
-            [
-                {"text": "🎯 مقصدهای ارسال", "callback_data": "panel_targets_menu"},
-                {"text": f"📋 لیست مبدا ({len(target_channels)}/25)", "callback_data": "panel_list"}
-            ],
-            [
-                {"text": "➕ افزودن مبدا", "callback_data": "panel_add_prompt"},
-                {"text": "🗑 حذف تکی مبدا", "callback_data": "panel_delete_menu"}
-            ],
-            [
-                {"text": "☑️ حذف گروهی مبدا", "callback_data": "panel_bulk_delete_menu"},
-                {"text": "🔑 توکن و API", "callback_data": "panel_tokens_menu"}
-            ],
-            [
-                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"},
-                {"text": f"⏱ فاصله: {interval}s", "callback_data": "panel_interval_menu"}
-            ],
-            [
-                {"text": "🚫 کلمات سیاه", "callback_data": "panel_blacklist_menu"},
-                {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"}
-            ],
-            [
-                {"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"},
-                {"text": "⚡️ پاکسازی کش", "callback_data": "clear_ram_cache"}
-            ],
-            [
-                {"text": "👑 ادمین‌ها", "callback_data": "panel_admins_menu"},
-                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
-            ],
-            [
-                {"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}
-            ]
+            [{"text": f"{status_icon} روشن / خاموش ربات", "callback_data": "toggle_bot_status"}],
+            [{"text": "🌐 تنظیمات ترجمه", "callback_data": "panel_translation_menu"}, {"text": f"{queue_st} صف انتشار ({queue_sec}s)", "callback_data": "panel_queue_menu"}],
+            [{"text": f"{cat_st} دسته‌بندی موضوعی", "callback_data": "panel_categories_menu"}, {"text": "📡 سلامت مبدا", "callback_data": "panel_health_monitor"}],
+            [{"text": "🎯 مقصدهای ارسال", "callback_data": "panel_targets_menu"}, {"text": f"📋 لیست مبدا ({len(target_channels)}/25)", "callback_data": "panel_list"}],
+            [{"text": "➕ افزودن مبدا", "callback_data": "panel_add_prompt"}, {"text": "🗑 حذف تکی مبدا", "callback_data": "panel_delete_menu"}],
+            [{"text": "☑️ حذف گروهی مبدا", "callback_data": "panel_bulk_delete_menu"}, {"text": "🔑 توکن و API", "callback_data": "panel_tokens_menu"}],
+            [{"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"}, {"text": f"⏱ فاصله: {interval}s", "callback_data": "panel_interval_menu"}],
+            [{"text": "🚫 کلمات سیاه", "callback_data": "panel_blacklist_menu"}, {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"}],
+            [{"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"}, {"text": "⚡️ پاکسازی کش", "callback_data": "clear_ram_cache"}],
+            [{"text": "👑 ادمین‌ها", "callback_data": "panel_admins_menu"}, {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}],
+            [{"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}]
         ]
     }
 
 def get_cancel_keyboard():
     return {
-        "inline_keyboard": [
-            [{"text": "🚫 انصراف و بازگشت به پنل", "callback_data": "cancel_action"}]
-        ]
+        "inline_keyboard": [[{"text": "🚫 انصراف و بازگشت به پنل", "callback_data": "cancel_action"}]]
     }
 
 def get_translation_keyboard():
@@ -460,14 +395,8 @@ def get_translation_keyboard():
         "inline_keyboard": [
             [{"text": f"زبان مقصد: [{t_lang}]", "callback_data": "set_target_lang_prompt"}],
             [{"text": f"ایموجی پرچم در انتها: {tag_st}", "callback_data": "toggle_trans_tag"}],
-            [
-                {"text": f"{en_st} انگلیسی 🇬🇧", "callback_data": "toggle_lang_en"},
-                {"text": f"{ar_st} عربی 🇸🇦", "callback_data": "toggle_lang_ar"}
-            ],
-            [
-                {"text": f"{he_st} عبری 🇮🇱", "callback_data": "toggle_lang_he"},
-                {"text": f"{fr_st} فرانسوی 🇫🇷", "callback_data": "toggle_lang_fr"}
-            ],
+            [{"text": f"{en_st} انگلیسی 🇬🇧", "callback_data": "toggle_lang_en"}, {"text": f"{ar_st} عربی 🇸🇦", "callback_data": "toggle_lang_ar"}],
+            [{"text": f"{he_st} عبری 🇮🇱", "callback_data": "toggle_lang_he"}, {"text": f"{fr_st} فرانسوی 🇫🇷", "callback_data": "toggle_lang_fr"}],
             [{"text": f"{tr_st} ترکی 🇹🇷", "callback_data": "toggle_lang_tr"}],
             [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
@@ -479,13 +408,7 @@ def get_queue_keyboard():
     return {
         "inline_keyboard": [
             [{"text": f"وضعیت زمان‌بندی: {q_st}", "callback_data": "toggle_queue_status"}],
-            [
-                {"text": "5 ثانیه", "callback_data": "set_q_5"},
-                {"text": "10 ثانیه", "callback_data": "set_q_10"},
-                {"text": f"• {q_sec}s •", "callback_data": "noop"},
-                {"text": "30 ثانیه", "callback_data": "set_q_30"},
-                {"text": "60 ثانیه", "callback_data": "set_q_60"}
-            ],
+            [{"text": "5 ثانیه", "callback_data": "set_q_5"}, {"text": "10 ثانیه", "callback_data": "set_q_10"}, {"text": f"• {q_sec}s •", "callback_data": "noop"}, {"text": "30 ثانیه", "callback_data": "set_q_30"}, {"text": "60 ثانیه", "callback_data": "set_q_60"}],
             [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
@@ -519,10 +442,8 @@ def get_tokens_keyboard():
     }
 
 def get_admins_keyboard():
-    keyboard = []
-    keyboard.append([{"text": "➕ افزودن ادمین جدید", "callback_data": "add_admin_prompt"}])
-    admins = config_db.get("admin_ids", [])
-    for adm in admins:
+    keyboard = [[{"text": "➕ افزودن ادمین جدید", "callback_data": "add_admin_prompt"}]]
+    for adm in config_db.get("admin_ids", []):
         if adm != INITIAL_ADMIN_ID:
             keyboard.append([{"text": f"❌ حذف ادمین {adm}", "callback_data": f"del_admin_{adm}"}])
     keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
@@ -548,10 +469,8 @@ def get_delete_channels_keyboard():
     return {"inline_keyboard": keyboard}
 
 def get_blacklist_keyboard():
-    keyboard = []
-    keyboard.append([{"text": "➕ افزودن کلمه جدید", "callback_data": "add_bl_word_prompt"}])
-    bl = config_db.get("blacklist", [])
-    for idx, word in enumerate(bl):
+    keyboard = [[{"text": "➕ افزودن کلمه جدید", "callback_data": "add_bl_word_prompt"}]]
+    for idx, word in enumerate(config_db.get("blacklist", [])):
         keyboard.append([{"text": f"❌ حذف «{word}»", "callback_data": f"del_bl_idx_{idx}"}])
     keyboard.append([{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}])
     return {"inline_keyboard": keyboard}
@@ -559,17 +478,9 @@ def get_blacklist_keyboard():
 def get_interval_keyboard():
     return {
         "inline_keyboard": [
-            [
-                {"text": "⚡️ ۲ ثانیه", "callback_data": "set_interval_2"},
-                {"text": "⏱ ۵ ثانیه", "callback_data": "set_interval_5"}
-            ],
-            [
-                {"text": "⏳ ۱۰ ثانیه (توصیه‌شده)", "callback_data": "set_interval_10"},
-                {"text": "🕰 ۳۰ ثانیه", "callback_data": "set_interval_30"}
-            ],
-            [
-                {"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}
-            ]
+            [{"text": "⚡️ ۲ ثانیه", "callback_data": "set_interval_2"}, {"text": "⏱ ۵ ثانیه", "callback_data": "set_interval_5"}],
+            [{"text": "⏳ ۱۰ ثانیه (توصیه‌شده)", "callback_data": "set_interval_10"}, {"text": "🕰 ۳۰ ثانیه", "callback_data": "set_interval_30"}],
+            [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
 
@@ -620,7 +531,7 @@ def fast_panel_listener():
                         if action == "panel_translation_menu":
                             t_lang = config_db.get("target_language", "fa").upper()
                             tag_st = "فعال" if config_db.get("translation_tag_active", True) else "غیرفعال"
-                            reply = f"🌐 **تنظیمات پیشرفته ترجمه و زبان‌ها**\n\n---" + f"\n• زبان مقصد: **{t_lang}**\n• برچسب پرچم زبان: **{tag_st}**\n• لیست سفید زبان‌های مبدا:"
+                            reply = f"🌐 **تنظیمات پیشرفته ترجمه و زبان‌ها**\n\n---" + f"\n• زبان مقصد: **{t_lang}**\n• برچسب پرچم زبان: **{tag_st}**"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
                             }, timeout=3)
@@ -711,7 +622,7 @@ def fast_panel_listener():
                                 }, timeout=3)
                             else:
                                 user_states[chat_id] = "WAITING_FOR_NEW_TARGET"
-                                reply = "🎯 **افزودن کانال مقصد جدید**\n\n---" + "\nاطلاعات را به فرمت زیر بفرستید:\n`آیدی_عددی یوزرنیم`\n\nمثال:\n`-100123456789 mynewchannel`"
+                                reply = "🎯 **افزودن کانال مقصد جدید**\n\n---" + "\nاطلاعات را به فرمت زیر بفرستید:\n`آیدی_عددی یوزرنیم`"
                                 http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                     "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                                 }, timeout=3)
@@ -918,9 +829,7 @@ def fast_panel_listener():
                             }, timeout=3)
 
                         elif action == "panel_blacklist_menu":
-                            bl = config_db.get("blacklist", [])
-                            bl_text = "\n".join([f"• `{w}`" for w in bl]) if bl else "خالی"
-                            reply = f"🚫 **مدیریت لیست سیاه**\n\n---" + f"\nکلمات فیلتر شده:\n{bl_text}"
+                            reply = f"🚫 **مدیریت لیست سیاه**\n\n---" + f"\nکلمات فیلتر شده فعلی"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
@@ -938,12 +847,12 @@ def fast_panel_listener():
                             if 0 <= idx < len(bl):
                                 bl.pop(idx)
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "parse_mode": "Markdown", "reply_markup": get_blacklist_keyboard()
+                                "chat_id": chat_id, "text": "✅ کلمه از لیست سیاه حذف شد.", "reply_markup": get_blacklist_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_force_post_prompt":
                             user_states[chat_id] = "WAITING_FOR_FORCE_POST"
-                            reply = "🚀 **ارسال پست دستی**\n\n---" + "\nمتن خبر دلخواه خود را بفرستید (در صورت نیاز به زبان خارجی، ربات آن را ترجمه خواهد کرد):"
+                            reply = "🚀 **ارسال پست دستی**\n\n---" + "\nمتن خبر دلخواه خود را بفرستید:"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
                             }, timeout=3)
@@ -982,7 +891,7 @@ def fast_panel_listener():
                                 config_db["target_language"] = new_lang
                                 reply = f"✅ زبان مقصد جدید روی **{new_lang.upper()}** تنظیم شد."
                             else:
-                                reply = "❌ کد زبان نامعتبر است (باید ۲ رقمی باشد مثل fa یا en)."
+                                reply = "❌ کد زبان نامعتبر است."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
                             }, timeout=3)
@@ -997,33 +906,25 @@ def fast_panel_listener():
                                     target_destinations.append({"chat_id": new_id, "username": new_un})
                                     reply = f"✅ کانال مقصد جدید (@{new_un}) افزوده شد."
                                 else:
-                                    reply = "⚠️ ظرفیت کانال‌های مقصد تکمیل است (حداکثر ۵ کانال)."
+                                    reply = "⚠️ ظرفیت کانال‌های مقصد تکمیل است."
                             else:
-                                reply = "❌ فرمت اشتباه است. لطفا به شکل `آیدی_عددی یوزرنیم` بفرستید."
+                                reply = "❌ فرمت اشتباه است."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif state == "WAITING_FOR_NEW_BOT_TOKEN":
                             user_states[chat_id] = None
-                            new_t = text.strip()
-                            if ":" in new_t and len(new_t) > 15:
-                                config_db["bot_token"] = new_t
-                                reply = "✅ توکن جدید ربات ثبت شد."
-                            else:
-                                reply = "❌ توکن نامعتبر است."
+                            config_db["bot_token"] = text.strip()
+                            reply = "✅ توکن جدید ربات ثبت شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif state == "WAITING_FOR_NEW_GEMINI_KEY":
                             user_states[chat_id] = None
-                            new_k = text.strip()
-                            if len(new_k) > 10:
-                                config_db["gemini_api_key"] = new_k
-                                reply = "✅ کلید جمنای با موفقیت ثبت شد."
-                            else:
-                                reply = "❌ کلید API نامعتبر است."
+                            config_db["gemini_api_key"] = text.strip()
+                            reply = "✅ کلید جمنای ثبت شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -1066,7 +967,7 @@ def fast_panel_listener():
                                 config_db.setdefault("golden_keywords", []).append(word)
                                 reply = "✅ کلمه طلایی افزوده شد."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif state == "WAITING_FOR_SIGNATURE":
@@ -1089,16 +990,17 @@ def fast_panel_listener():
 
                         elif state == "WAITING_FOR_FORCE_POST":
                             user_states[chat_id] = None
-                            # ترجمه خودکار پست دستی در صورت نیاز
-                            translated_text, src_lang = translate_text(text)
-                            final_post = rewrite_with_ai(translated_text, translated_from=src_lang)
-                            
-                            if final_post:
-                                news_queue.put({"text": final_post, "url": None})
-                                reply = "🚀 **پست دستی (با بررسی ترجمه) به صف انتشار اضافه شد.**"
-                            else:
-                                reply = "❌ خطا در پردازش پست دستی."
+                            try:
+                                translated_text, src_lang = translate_text(text)
+                                final_post = rewrite_with_ai(translated_text, translated_from=src_lang)
+                                if not final_post:
+                                    final_post = clean_fallback(text, translated_from=src_lang)
                                 
+                                news_queue.put({"text": final_post, "url": None})
+                                reply = "🚀 **پست دستی با موفقیت به صف انتشار اضافه شد.**"
+                            except Exception as e:
+                                reply = f"❌ خطا در پردازش پست: {str(e)[:50]}"
+
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -1124,7 +1026,7 @@ def process_single_channel(channel):
     try:
         res = http_session.get(url, timeout=5)
         if res.status_code != 200:
-            channel_health_status[channel] = "🔴 خطا (در دسترس نیست یا فیلتر شده)"
+            channel_health_status[channel] = "🔴 خطا (در دسترس نیست)"
             return
         
         soup = BeautifulSoup(res.text, "html.parser")
@@ -1142,6 +1044,9 @@ def process_single_channel(channel):
                     raw_text = text_div.get_text(separator="\n")
                     translated_text, src_lang = translate_text(raw_text)
                     final_text = rewrite_with_ai(translated_text, translated_from=src_lang)
+                    if not final_text:
+                        final_text = clean_fallback(raw_text, translated_from=src_lang)
+                    
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
@@ -1154,9 +1059,9 @@ def process_single_channel(channel):
                 else:
                     seen_post_ids.add(post_id)
         else:
-            channel_health_status[channel] = "🟡 بدون پست یا ساختار جدید"
+            channel_health_status[channel] = "🟡 بدون پست جدید"
     except Exception:
-        channel_health_status[channel] = "🔴 خطای اتصال به شبکه"
+        channel_health_status[channel] = "🔴 خطای شبکه"
 
 def fetch_news_loop():
     with ThreadPoolExecutor(max_workers=5) as executor:
