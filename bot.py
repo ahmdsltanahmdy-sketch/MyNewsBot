@@ -46,13 +46,13 @@ config_db = {
         "فناوری": ["هوش مصنوعی", "گوشی", "اینترنت", "تکنولوژی", "آپدیت"]
     },
     "categories_active": True,
+    "auto_translate_english": True, # ترجمه خودکار کانال‌های انگلیسی
     "fuzzy_check_active": True,
     "fuzzy_threshold": 70,
     "quiet_hours_active": False,
     "quiet_start_hour": 0,
     "quiet_end_hour": 6,
     "check_interval": 10,
-    # قابلیت صف‌بندی و انتشار زمان‌بندی‌شده (از ۵ ثانیه به بالا)
     "queue_schedule_active": True,
     "queue_interval": 5,
     "admin_ids": [INITIAL_ADMIN_ID]
@@ -96,6 +96,34 @@ def clear_seen_posts():
             return True
         except Exception:
             return False
+
+def translate_to_persian(text):
+    if not text or not config_db.get("auto_translate_english", True):
+        return text
+    
+    # تشخیص سریع اینکه متن انگلیسی است یا خیر (حضور حروف انگلیسی بیشتر از فارسی)
+    eng_chars = len(re.findall(r'[a-zA-Z]', text))
+    if eng_chars < 15: # اگر متن کوتاه یا فارسی است ترجمه نکن
+        return text
+
+    try:
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "en",
+            "tl": "fa",
+            "dt": "t",
+            "q": text
+        }
+        response = http_session.get(url, params=params, timeout=5)
+        if response.status_code == 200:
+            res_json = response.json()
+            translated_sentence = "".join([item[0] for item in res_json[0] if item[0]])
+            if translated_sentence:
+                return translated_sentence
+    except Exception:
+        pass
+    return text
 
 def remove_emojis(text):
     if not text:
@@ -285,7 +313,6 @@ def send_telegram_post_to_all(text, source_url=None):
             pass
     return success_any
 
-# پردازش صف انتشار زمان‌بندی‌شده
 def queue_worker():
     print("⏳ Queue worker thread is online...")
     while True:
@@ -319,6 +346,7 @@ def get_main_panel_keyboard():
     queue_st = "🟢" if config_db.get("queue_schedule_active", True) else "🔴"
     queue_sec = config_db.get("queue_interval", 5)
     cat_st = "🟢" if config_db.get("categories_active", True) else "🔴"
+    trans_st = "🟢" if config_db.get("auto_translate_english", True) else "🔴"
 
     return {
         "inline_keyboard": [
@@ -327,38 +355,41 @@ def get_main_panel_keyboard():
             ],
             [
                 {"text": f"{queue_st} زمان‌بندی صف ({queue_sec}s)", "callback_data": "panel_queue_menu"},
-                {"text": f"{cat_st} دسته‌بندی موضوعی", "callback_data": "panel_categories_menu"}
+                {"text": f"{trans_st} ترجمه خودکار انگلیسی", "callback_data": "toggle_translate_status"}
             ],
             [
-                {"text": "📡 مانیتورینگ سلامت مبدا", "callback_data": "panel_health_monitor"},
-                {"text": "🎯 مقصدهای ارسال", "callback_data": "panel_targets_menu"}
+                {"text": f"{cat_st} دسته‌بندی موضوعی", "callback_data": "panel_categories_menu"},
+                {"text": "📡 مانیتورینگ سلامت مبدا", "callback_data": "panel_health_monitor"}
             ],
             [
-                {"text": "📋 لیست مبدا", "callback_data": "panel_list"},
-                {"text": "➕ افزودن مبدا", "callback_data": "panel_add_prompt"}
+                {"text": "🎯 مقصدهای ارسال", "callback_data": "panel_targets_menu"},
+                {"text": "📋 لیست مبدا", "callback_data": "panel_list"}
             ],
             [
-                {"text": "🗑 حذف تکی مبدا", "callback_data": "panel_delete_menu"},
-                {"text": "☑️ حذف گروهی مبدا", "callback_data": "panel_bulk_delete_menu"}
+                {"text": "➕ افزودن مبدا", "callback_data": "panel_add_prompt"},
+                {"text": "🗑 حذف تکی مبدا", "callback_data": "panel_delete_menu"}
             ],
             [
-                {"text": "🔑 توکن و API", "callback_data": "panel_tokens_menu"},
-                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"}
+                {"text": "☑️ حذف گروهی مبدا", "callback_data": "panel_bulk_delete_menu"},
+                {"text": "🔑 توکن و API", "callback_data": "panel_tokens_menu"}
             ],
             [
-                {"text": f"⏱ فاصله بررسی: {interval}s", "callback_data": "panel_interval_menu"},
-                {"text": "🚫 کلمات سیاه", "callback_data": "panel_blacklist_menu"}
+                {"text": "✏️ ویرایش امضا", "callback_data": "panel_sig_prompt"},
+                {"text": f"⏱ فاصله: {interval}s", "callback_data": "panel_interval_menu"}
             ],
             [
-                {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"},
-                {"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"}
+                {"text": "🚫 کلمات سیاه", "callback_data": "panel_blacklist_menu"},
+                {"text": "🤖 تست سلامت AI", "callback_data": "test_ai_health"}
             ],
             [
-                {"text": "⚡️ پاکسازی کش", "callback_data": "clear_ram_cache"},
-                {"text": "👑 ادمین‌ها", "callback_data": "panel_admins_menu"}
+                {"text": "🔍 گزارش ۵ خبر آخر", "callback_data": "show_recent_news_log"},
+                {"text": "⚡️ پاکسازی کش", "callback_data": "clear_ram_cache"}
             ],
             [
-                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"},
+                {"text": "👑 ادمین‌ها", "callback_data": "panel_admins_menu"},
+                {"text": "🚀 ارسال پست دستی", "callback_data": "panel_force_post_prompt"}
+            ],
+            [
                 {"text": "📊 آمار و وضعیت کامل", "callback_data": "panel_status"}
             ]
         ]
@@ -532,7 +563,13 @@ def fast_panel_listener():
                         except Exception:
                             pass
 
-                        if action == "panel_queue_menu":
+                        if action == "toggle_translate_status":
+                            config_db["auto_translate_english"] = not config_db.get("auto_translate_english", True)
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "✅ وضعیت ترجمه خودکار انگلیسی به‌روز شد.", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "panel_queue_menu":
                             q_st = "🟢 فعال" if config_db.get("queue_schedule_active", True) else "🔴 غیرفعال"
                             q_sec = config_db.get("queue_interval", 5)
                             reply = f"⏳ **سیستم صف‌بندی و انتشار زمان‌بندی‌شده**\n\n---" + f"\nوضعیت: {q_st}\nفاصله بین ارسال‌ها: **{q_sec} ثانیه**"
@@ -799,7 +836,7 @@ def fast_panel_listener():
                             sec = int(action.replace("set_interval_", ""))
                             config_db["check_interval"] = sec
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": f"✅ فاصله بررسی روی {sec} ثانیه تنظیم شد.", "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
+                                "chat_id": chat_id, "text": f"✅ فاصله بررسی روی {sec} ثانیه تنظیم شد.", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif action == "panel_sig_prompt":
@@ -1014,7 +1051,9 @@ def process_single_channel(channel):
                 
                 if text_div:
                     raw_text = text_div.get_text(separator="\n")
-                    final_text = rewrite_with_ai(raw_text)
+                    # ترجمه خودکار در صورت انگلیسی بودن کانال مبدا
+                    translated_text = translate_to_persian(raw_text)
+                    final_text = rewrite_with_ai(translated_text)
                     source_post_url = f"https://t.me/{post_id}"
 
                     if final_text:
