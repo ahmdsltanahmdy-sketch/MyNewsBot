@@ -51,7 +51,7 @@ config_db = {
     },
     "categories_active": True,
     "target_language": "fa", 
-    "auto_translate_active": True, # قابلیت روشن/خاموش کردن ترجمه خودکار
+    "auto_translate_active": True,
     "allowed_languages": {"en": True, "ar": True, "he": True, "fr": True, "tr": True}, 
     "translation_tag_active": True, 
     "fuzzy_check_active": True,
@@ -80,8 +80,11 @@ if GEMINI_API_KEY:
         print(f"Gemini Init Warning: {e}")
 
 http_session = requests.Session()
+# هدرهای پیشرفته برای جلوگیری از بلاک شدن توسط تلگرام
 http_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
 })
 
 user_states = {}
@@ -1024,16 +1027,26 @@ def process_single_channel(channel):
     if is_in_quiet_hours():
         return
 
-    url = f"https://t.me/s/{channel}"
+    # استفاده از چندین متد جایگزین برای جلوگیری از بلاک شدن توسط تلگرام
+    urls_to_try = [
+        f"https://t.me/s/{channel}",
+        f"https://t.me/s/{channel}?q="
+    ]
+    
+    posts = []
+    for url in urls_to_try:
+        try:
+            res = http_session.get(url, timeout=6)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                found_posts = soup.find_all("div", class_="tgme_widget_message")
+                if found_posts:
+                    posts = found_posts
+                    break
+        except Exception:
+            continue
+            
     try:
-        res = http_session.get(url, timeout=5)
-        if res.status_code != 200:
-            channel_health_status[channel] = "🔴 خطا (در دسترس نیست)"
-            return
-        
-        soup = BeautifulSoup(res.text, "html.parser")
-        posts = soup.find_all("div", class_="tgme_widget_message")
-        
         if posts:
             channel_health_status[channel] = "🟢 سالم و آنلاین"
             last_post = posts[-1]
@@ -1061,9 +1074,9 @@ def process_single_channel(channel):
                 else:
                     seen_post_ids.add(post_id)
         else:
-            channel_health_status[channel] = "🟡 بدون پست جدید"
-    except Exception:
-        channel_health_status[channel] = "🔴 خطای شبکه"
+            channel_health_status[channel] = "🟡 بدون پست جدید یا محدودیت دسترسی"
+    except Exception as e:
+        channel_health_status[channel] = f"🔴 خطای پردازش"
 
 def fetch_news_loop():
     with ThreadPoolExecutor(max_workers=5) as executor:
