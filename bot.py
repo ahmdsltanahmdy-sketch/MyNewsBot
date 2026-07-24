@@ -35,9 +35,10 @@ DEFAULT_TARGETS = [
     {"chat_id": "-1002038404831", "username": "Rallyir"}
 ]
 
-# ذخیره تنظیمات پیشرفته در حافظه رم
-config_db = {
+# ذخیره تنظیمات پیشرفته در حافظه رم با قابلیت ریست
+DEFAULT_CONFIG = {
     "bot_active": True,
+    "ai_active": True, # قابلیت جدید: روشن/خاموش کردن هوش مصنوعی
     "bot_token": (os.environ.get("BOT_TOKEN") or "8903869878:AAGWo00OXfJYszdgJ-L4odB2d5Ug4phJK0I").strip(),
     "gemini_api_key": (os.environ.get("GEMINI_API_KEY") or "").strip(),
     "channel_signature": "🆔 @Rallyir",
@@ -46,6 +47,13 @@ config_db = {
         "سیاسی": ["دولت", "مجلس", "رهبر", "وزیر", "انتخابات"],
         "ورزشی": ["فوتبال", "استقلال", "پرسپولیس", "تیم ملی", "لیگ"],
         "فناوری": ["هوش مصنوعی", "گوشی", "اینترنت", "تکنولوژی", "آپدیت"]
+    },
+    # قابلیت جدید: تعیین فرمت و قالب سفارشی برای هر دسته‌بندی
+    "categories_templates": {
+        "سیاسی": "🏛 [گزارش سیاسی ویژه]\n\n{body}",
+        "ورزشی": "⚽️ [اخبار داغ ورزشی]\n\n{body}",
+        "فناوری": "💻 [تک‌نیوز و فناوری]\n\n{body}",
+        "عمومی": "📌 <b>{headline}</b>\n\n{body}"
     },
     "categories_active": True,
     
@@ -65,19 +73,12 @@ config_db = {
     "admin_ids": [INITIAL_ADMIN_ID]
 }
 
+config_db = DEFAULT_CONFIG.copy()
+
 target_channels = DEFAULT_CHANNELS.copy()
 target_destinations = DEFAULT_TARGETS.copy()
 seen_post_ids = set()
 news_queue = queue.Queue()
-
-BOT_TOKEN = config_db.get("bot_token", "")
-GEMINI_API_KEY = config_db.get("gemini_api_key", "")
-
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"Gemini Init Warning: {e}")
 
 http_session = requests.Session()
 http_session.headers.update({
@@ -93,16 +94,9 @@ db_lock = threading.Lock()
 last_update_id = 0
 
 def is_admin(user_id):
-    admins = config_db.get("admin_ids", [])
-    return (user_id in admins) or (user_id == INITIAL_ADMIN_ID)
-
-def clear_seen_posts():
     with db_lock:
-        try:
-            seen_post_ids.clear()
-            return True
-        except Exception:
-            return False
+        admins = config_db.get("admin_ids", [])
+        return (user_id in admins) or (user_id == INITIAL_ADMIN_ID)
 
 def translate_text(text):
     if not text:
@@ -195,19 +189,29 @@ def check_blacklist(text):
 
 def detect_category_and_tags(text):
     if not config_db.get("categories_active", True):
-        return "#خبر"
+        return "#خبر", "عمومی"
     
     tags = []
+    detected_cat = "عمومی"
     categories = config_db.get("categories", {})
     for cat_name, keywords in categories.items():
         for kw in keywords:
             if kw and kw.lower() in text.lower():
                 tags.append(f"#{cat_name}")
+                detected_cat = cat_name
                 break
+        if tags:
+            break
     
     if not tags:
         tags.append("#خبر_فوری")
-    return " ".join(tags[:3])
+    return " ".join(tags[:3]), detected_cat
+
+def apply_category_template(text, headline, cat_name):
+    templates = config_db.get("categories_templates", {})
+    template = templates.get(cat_name, templates.get("عمومی", "📌 <b>{headline}</b>\n\n{body}"))
+    formatted_body = template.replace("{headline}", headline).replace("{body}", text)
+    return formatted_body
 
 def is_fuzzy_duplicate(new_text):
     if not config_db.get("fuzzy_check_active", True):
@@ -237,10 +241,14 @@ def clean_fallback(text, translated_from=None):
     lines = [l.strip() for l in clean_t.splitlines() if l.strip()]
     if not lines:
         return ""
-    lines[0] = f"📌 <b>{lines[0]}</b>"
+    headline = lines[0]
+    body_text = "\n\n".join(lines[1:]) if len(lines) > 1 else headline
+    
+    cat_tags, cat_name = detect_category_and_tags(text)
+    formatted_body = apply_category_template(body_text, headline, cat_name)
+    
     default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
     sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
-    cat_tags = detect_category_and_tags(text)
     
     trans_tag = ""
     if translated_from and config_db.get("translation_tag_active", True):
@@ -248,8 +256,7 @@ def clean_fallback(text, translated_from=None):
         emoji_flag = lang_emojis.get(translated_from, "🌐")
         trans_tag = f"\n\n{emoji_flag}"
 
-    body = "\n\n".join(lines)
-    return clean_extra_spaces(f"{body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
+    return clean_extra_spaces(f"{formatted_body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
 
 def rewrite_with_ai(raw_text, translated_from=None):
     if not raw_text or len(raw_text.strip()) < 15 or check_blacklist(raw_text):
@@ -257,6 +264,10 @@ def rewrite_with_ai(raw_text, translated_from=None):
 
     if is_fuzzy_duplicate(raw_text):
         return None
+
+    # بررسی فعال بودن هوش مصنوعی
+    if not config_db.get("ai_active", True):
+        return clean_fallback(raw_text, translated_from)
 
     key = config_db.get("gemini_api_key", "").strip()
     if not key:
@@ -267,7 +278,7 @@ def rewrite_with_ai(raw_text, translated_from=None):
     except Exception:
         pass
 
-    cat_tags = detect_category_and_tags(raw_text)
+    cat_tags, cat_name = detect_category_and_tags(raw_text)
     prompt = (
         "تو یک ویرایشگر خبر حرفه‌ای هستی. متن زیر را بازنویسی کن.\n\n"
         "قوانین:\n"
@@ -289,8 +300,9 @@ def rewrite_with_ai(raw_text, translated_from=None):
                 return None
 
             headline = lines[0].replace("<b>", "").replace("</b>", "")
-            lines[0] = f"📌 <b>{headline}</b>"
-            formatted_body = "\n\n".join(lines)
+            body_text = "\n\n".join(lines[1:]) if len(lines) > 1 else headline
+            
+            formatted_body = apply_category_template(body_text, headline, cat_name)
 
             default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
             sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
@@ -302,9 +314,11 @@ def rewrite_with_ai(raw_text, translated_from=None):
                 trans_tag = f"\n\n{emoji_flag}"
 
             clean_res = clean_extra_spaces(f"{formatted_body}{trans_tag}\n\n{cat_tags}\n\n{sig}")
-            recent_posts_history.append(sanitize_all_links(raw_text))
-            if len(recent_posts_history) > 30:
-                recent_posts_history.pop(0)
+            
+            with db_lock:
+                recent_posts_history.append(sanitize_all_links(raw_text))
+                if len(recent_posts_history) > 30:
+                    recent_posts_history.pop(0)
 
             return clean_res
         except Exception:
@@ -313,7 +327,7 @@ def rewrite_with_ai(raw_text, translated_from=None):
     return clean_fallback(raw_text, translated_from)
 
 def send_telegram_post_to_all(text, source_url=None):
-    token = config_db.get("bot_token", BOT_TOKEN).strip()
+    token = config_db.get("bot_token", "").strip()
     if not token or not target_destinations:
         return False
 
@@ -382,6 +396,7 @@ def queue_worker():
 
 def get_main_panel_keyboard():
     status_icon = "🟢" if config_db.get("bot_active", True) else "🔴"
+    ai_status = "🟢 AI" if config_db.get("ai_active", True) else "🔴 AI"
     interval = config_db.get("check_interval", 10)
     
     queue_st = "🟢" if config_db.get("queue_schedule_active", True) else "🔴"
@@ -391,7 +406,8 @@ def get_main_panel_keyboard():
     return {
         "inline_keyboard": [
             [
-                {"text": f"{status_icon} روشن / خاموش ربات", "callback_data": "toggle_bot_status"}
+                {"text": f"{status_icon} روشن / خاموش ربات", "callback_data": "toggle_bot_status"},
+                {"text": f"{ai_status} هوش مصنوعی", "callback_data": "toggle_ai_status"}
             ],
             [
                 {"text": "🌐 تنظیمات ترجمه", "callback_data": "panel_translation_menu"},
@@ -510,6 +526,7 @@ def get_tokens_keyboard():
         "inline_keyboard": [
             [{"text": "🤖 تغییر توکن ربات", "callback_data": "set_bot_token_prompt"}],
             [{"text": "💎 تغییر کلید جمنای", "callback_data": "set_gemini_key_prompt"}],
+            [{"text": "🔄 ریست کامل تنظیمات به پیش‌فرض", "callback_data": "reset_config_prompt"}],
             [{"text": "🚫 انصراف و بازگشت", "callback_data": "cancel_action"}]
         ]
     }
@@ -613,7 +630,20 @@ def fast_panel_listener():
                         except Exception:
                             pass
 
-                        if action == "panel_translation_menu":
+                        if action == "toggle_ai_status":
+                            config_db["ai_active"] = not config_db.get("ai_active", True)
+                            ai_st = "🟢 فعال" if config_db["ai_active"] else "🔴 غیرفعال"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": f"✅ وضعیت هوش مصنوعی به‌روز شد: {ai_st}", "reply_markup": get_main_panel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "reset_config_prompt":
+                            user_states[chat_id] = "WAITING_FOR_RESET_CONFIRM"
+                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": chat_id, "text": "⚠️ **آیا از ریست کامل تنظیمات اطمینان دارید؟**\n\nبرای تأیید کلمه `تایید` را ارسال کنید:", "parse_mode": "Markdown", "reply_markup": get_cancel_keyboard()
+                            }, timeout=3)
+
+                        elif action == "panel_translation_menu":
                             t_lang = config_db.get("target_language", "fa").upper()
                             tag_st = "فعال" if config_db.get("translation_tag_active", True) else "غیرفعال"
                             reply = f"🌐 **تنظیمات پیشرفته ترجمه و زبان‌ها**\n\n---" + f"\n• زبان مقصد: **{t_lang}**\n• برچسب پرچم زبان: **{tag_st}**\n• لیست سفید زبان‌های مبدا:"
@@ -946,7 +976,8 @@ def fast_panel_listener():
 
                         elif action == "panel_status":
                             st_icon = "🟢 روشن" if config_db.get("bot_active", True) else "🔴 خاموش"
-                            reply = f"📊 **آمار و وضعیت کامل سیستم**\n\n---" + f"\n• وضعیت ربات: {st_icon}\n• کانال‌های مقصد فعال: {len(target_destinations)}/5\n• کانال‌های مبدا: {len(target_channels)}"
+                            ai_icon = "🟢 فعال" if config_db.get("ai_active", True) else "🔴 غیرفعال"
+                            reply = f"📊 **آمار و وضعیت کامل سیستم**\n\n---" + f"\n• وضعیت ربات: {st_icon}\n• وضعیت هوش مصنوعی: {ai_icon}\n• کانال‌های مقصد فعال: {len(target_destinations)}/5\n• کانال‌های مبدا: {len(target_channels)}"
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
@@ -971,16 +1002,15 @@ def fast_panel_listener():
 
                         state = user_states.get(chat_id)
 
-                        if state == "WAITING_FOR_TARGET_LANG":
+                        if state == "WAITING_FOR_RESET_CONFIRM":
                             user_states[chat_id] = None
-                            new_lang = text.lower().strip()
-                            if len(new_lang) == 2:
-                                config_db["target_language"] = new_lang
-                                reply = f"✅ زبان مقصد جدید روی **{new_lang.upper()}** تنظیم شد."
+                            if text == "تایید":
+                                config_db.update(DEFAULT_CONFIG.copy())
+                                reply = "✅ تمامی تنظیمات با موفقیت به حالت پیش‌فرض ریست شد."
                             else:
-                                reply = "❌ کد زبان نامعتبر است (باید ۲ رقمی باشد مثل fa یا en)."
+                                reply = "❌ عملیات ریست لغو شد (کلمه تأیید اشتباه بود)."
                             http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_translation_keyboard()
+                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
                         elif state == "WAITING_FOR_NEW_TARGET":
@@ -1055,16 +1085,6 @@ def fast_panel_listener():
                                 "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_main_panel_keyboard()
                             }, timeout=3)
 
-                        elif state == "WAITING_FOR_GOLDEN_WORD":
-                            user_states[chat_id] = None
-                            word = text.strip()
-                            if word:
-                                config_db.setdefault("golden_keywords", []).append(word)
-                                reply = "✅ کلمه طلایی افزوده شد."
-                            http_session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": get_golden_keyboard()
-                            }, timeout=3)
-
                         elif state == "WAITING_FOR_SIGNATURE":
                             user_states[chat_id] = None
                             config_db["channel_signature"] = text
@@ -1088,7 +1108,10 @@ def fast_panel_listener():
                             default_uname = target_destinations[0]["username"] if target_destinations else "Rallyir"
                             sig = config_db.get("channel_signature", f"🆔 @{default_uname}")
                             clean_text = sanitize_all_links(text)
-                            post_text = clean_extra_spaces(f"📌 <b>{clean_text[:40]}...</b>\n\n{clean_text}\n\n#خبر_فوری\n\n{sig}")
+                            
+                            cat_tags, cat_name = detect_category_and_tags(text)
+                            formatted_body = apply_category_template(clean_text, clean_text[:40], cat_name)
+                            post_text = clean_extra_spaces(f"{formatted_body}\n\n{cat_tags}\n\n{sig}")
                             
                             news_queue.put({"text": post_text, "url": None})
                             reply = "🚀 **پست به صف انتشار اضافه شد و به زودی ارسال خواهد شد.**"
@@ -1141,9 +1164,11 @@ def process_single_channel(channel):
                         seen_post_ids.add(post_id)
                         news_queue.put({"text": final_text, "url": source_post_url})
                         first_line = final_text.splitlines()[0].replace("<b>", "").replace("</b>", "").replace("📌 ", "")
-                        last_processed_news_log.append(f"[{channel}] {first_line}")
-                        if len(last_processed_news_log) > 5:
-                            last_processed_news_log.pop(0)
+                        
+                        with db_lock:
+                            last_processed_news_log.append(f"[{channel}] {first_line}")
+                            if len(last_processed_news_log) > 5:
+                                last_processed_news_log.pop(0)
                 else:
                     seen_post_ids.add(post_id)
         else:
